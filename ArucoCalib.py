@@ -1,13 +1,11 @@
 import cv2 
 import numpy as np
 import glob
+import os
 
 """write the relevant parameters for your ArUco marker detection and calibration here"""
-folder_path_left = '/Users/thijnvanveen/Desktop/Biomimicrh/Test code delete after/CameraLeft'
-folder_path_right = '/Users/thijnvanveen/Desktop/Biomimicrh/Test code delete after/CameraRight'
-
-
-
+folder_path_left = 'C:\\Users\\Matth\\School2025\\Biomimicry\\BiomimicryCode\\DepthPerceptionPhotosTest\\Cam0'
+folder_path_right = 'C:\\Users\\Matth\\School2025\\Biomimicry\\BiomimicryCode\\DepthPerceptionPhotosTest\\Cam1'
 
 # parameters for ArUco marker detection and calibration
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
@@ -35,39 +33,71 @@ def camera_calibration(images):
                      [size_of_marker, 0, 0],
                      [size_of_marker, size_of_marker, 0],
                      [0, size_of_marker, 0]], dtype=np.float32)
-    #Error message in case of no images
+    # Error message in case of no images
     if len(images) == 0:
         raise ValueError("No images provided for calibration.")
+    print(f"Starting calibration on {len(images)} images...")
+    detected_count = 0
     # loop through all images and detect ArUco markers
-    for fname in images:
+    for idx, fname in enumerate(images, start=1):
+        print(f"Processing ({idx}/{len(images)}): {fname}")
         # Read the image and convert to grayscale
         img = cv2.imread(fname)
+        print(f"  Read image {fname}: {img.shape[1]}x{img.shape[0]} pixels")
+        if img is None:
+            print(f"  Warning: could not read image {fname}, skipping.")
+            continue
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        print(f"  Converted to grayscale.")
 
         # Detect ArUco markers in the image
         corners, ids, rejectedImgPoints = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+        print(f"  Detected markers: {ids.flatten() if ids is not None else []}")
 
-
-        if ids is not None:
+        if ids is not None and len(ids) > 0:
+            detected_count += 1
+            print(f"  Found {len(ids)} markers in {fname}.")
             for corner in corners:
                 # search for subpixel corners in the detected corners
-                cv2.cornerSubPix(gray, corner, winSize=(3,3), zeroZone=(-1,-1), criteria=criteria)
+                try:
+                    cv2.cornerSubPix(gray, corner, winSize=(3,3), zeroZone=(-1,-1), criteria=criteria)
+                except Exception:
+                    # some OpenCV versions expect different input shapes; ignore failure here
+                    pass
                 imgpoints.append(corner.reshape(-1, 2))
                 objpoints.append(objp)
+        else:
+            print(f"  No markers detected in {fname}.")
     
+    if len(objpoints) == 0 or len(imgpoints) == 0:
+        raise ValueError("No ArUco markers were detected in any of the provided images. Calibration cannot proceed.")
+
     # Perform camera calibration to get camera matrix and distortion coefficients
     ret, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)
 
+    print(f"Calibration finished: used {len(objpoints)} views, reproj error={ret}")
     return camera_matrix, dist_coeffs
 
-def image_paths_from_folder(folder_path, extension='jpg'):
+def image_paths_from_folder(folder_path, extensions=None):
     """
-    This function retrieves all image paths from a specified folder with a given extension.
-    arguments: folder_path -- path to the folder containing images
-               extension -- file extension of the images (default is 'jpg')
+    Retrieve image paths from a folder. Searches a set of common extensions when
+    `extensions` is None. Returns a sorted list.
+
+    arguments:
+        folder_path -- path to the folder containing images
+        extensions -- list of extensions (e.g. ['jpg','jpeg']) or None to use common ones
     returns: list of image paths
     """
-    image_paths = glob.glob(f"{folder_path}/*.{extension}")
+    if extensions is None:
+        extensions = ['jpg', 'jpeg', 'png', 'JPG', 'JPEG', 'PNG']
+
+    image_paths = []
+    for ext in extensions:
+        pattern = os.path.join(folder_path, f"*.{ext}")
+        image_paths.extend(glob.glob(pattern))
+
+    # remove duplicates and sort for deterministic order
+    image_paths = sorted(list(dict.fromkeys(image_paths)))
     return image_paths
 
 
@@ -78,9 +108,9 @@ def stereo_vision_calibration(Left_camera_matrix, Left_dist_coeffs, Right_camera
     and you have synchronized images of the same ArUco board or pattern.
     """
 
-    # Load image paths from both folders
-    left_images = sorted(glob.glob(f"{folder_path_left}/*.JPG"))
-    right_images = sorted(glob.glob(f"{folder_path_right}/*.JPG"))
+    # Load image paths from both folders using the helper so multiple extensions are supported
+    left_images = image_paths_from_folder(folder_path_left)
+    right_images = image_paths_from_folder(folder_path_right)
 
     # Prepare ArUco detector
     objpoints = []  # 3D points in real world
@@ -225,9 +255,18 @@ def compute_depth_map(left_image_path, right_image_path,
 
 
 if __name__ == "__main__":
-    image_paths_left = image_paths_from_folder(folder_path_left, extension='JPG')
+    # Automatically detect common image extensions in the folders
+    image_paths_left = image_paths_from_folder(folder_path_left)
+    print("Found", len(image_paths_left), "images in left folder for calibration.")
+    if len(image_paths_left) == 0:
+        print(f"No images found in left folder '{folder_path_left}'. Check the path and file extensions.")
+        raise SystemExit(1)
     camera_matrix_left, dist_coeffs_left = camera_calibration(image_paths_left)
-    image_paths_right = image_paths_from_folder(folder_path_right, extension='JPG')
+    image_paths_right = image_paths_from_folder(folder_path_right)
+    print("Found", len(image_paths_right), "images in right folder for calibration.")
+    if len(image_paths_right) == 0:
+        print(f"No images found in right folder '{folder_path_right}'. Check the path and file extensions.")
+        raise SystemExit(1)
     camera_matrix_right, dist_coeffs_right = camera_calibration(image_paths_right)
 
     print("Left Camera Matrix:\n", camera_matrix_left)
