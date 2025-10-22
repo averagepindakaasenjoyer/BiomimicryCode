@@ -4,8 +4,8 @@ import glob
 import os
 
 """write the relevant parameters for your ArUco marker detection and calibration here"""
-folder_path_left = 'FotosTest/Cam0'
-folder_path_right = 'FotosTest/Cam1'
+folder_path_left = 'C:\\Users\\Matth\\School2025\\Biomimicry\\BiomimicryCode\\FotosTest\\Cam0'
+folder_path_right = 'C:\\Users\\Matth\\School2025\\Biomimicry\\BiomimicryCode\\FotosTest\\Cam1'
 
 # parameters for ArUco marker detection and calibration
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
