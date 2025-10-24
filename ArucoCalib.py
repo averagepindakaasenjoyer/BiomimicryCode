@@ -253,6 +253,11 @@ def compute_depth_map(left_image_path, right_image_path,
 
     return disparity, depth_map
 
+def save_calibration_parameters(file_path, camera_matrix, dist_coeffs):
+    """
+    Save camera calibration parameters to a file.
+    """
+    np.savez(file_path, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
 
 if __name__ == "__main__":
     # Automatically detect common image extensions in the folders
@@ -273,6 +278,9 @@ if __name__ == "__main__":
     print("Right Camera Matrix:\n", camera_matrix_right)
 
     R, T, Q = stereo_vision_calibration(camera_matrix_left, dist_coeffs_left, camera_matrix_right, dist_coeffs_right)
+    save_calibration_parameters('left_camera_params.npz', camera_matrix_left, dist_coeffs_left)
+    save_calibration_parameters('right_camera_params.npz', camera_matrix_right, dist_coeffs_right)
+    
 
     #test images
     test_left = image_paths_left[0]
