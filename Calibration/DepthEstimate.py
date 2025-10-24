@@ -1,6 +1,8 @@
 import cv2 
-import numpy as np
 import glob
+
+import numpy as np
+
 import os
 
 """
@@ -19,8 +21,8 @@ Need to change following parameters for different setups:
 """
 file_path = ('/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam0/camera0pos0.jpg',
              '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam1/camera1pos0.jpg') # Paths to calibration images for each camera
-num_disparities = 16*5  # Must be divisible by 16
-block_size = 15  # Must be odd and >=1
+num_disparities = 16*5  # Must be divisible by 16 this shows the maximum disparity minus minimum disparity
+block_size = 15  # Must be odd and >=1 this is the linear size of the blocks compared by the algorithm.
 camera_parameters_path_left = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/calibration_results_cam1.npz'
 camera_parameters_path_right = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/calibration_results_cam2.npz'
 stereo_parameters_path = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/stereo_calibration_results.npz'
