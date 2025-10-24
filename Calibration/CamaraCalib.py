@@ -12,13 +12,13 @@ Need to change following prameters for different setups:
 - output_file: The list names for the files where calibration results will be saved.
     - default: 'calibration_results_camX.npz' with X being the camera number.
 - aruco_dict_type: The type of aruco dictionary used for marker detection.
-    - default: cv2.aruco.DICT_4X4_50 This is the aruco board available from the computer vision lab.
+    - default: cv2.aruco.DICT_4X4_50 This is the aruco board available from the makerspace Aruco board.
 - max_iterations: The maximum number of iterations for corner refinement.
 - termination_eps: The desired accuracy for corner refinement. (this is between consecutive iterations shows convergences)
 """
 file_path = ['/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam0',
              '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam1'] # Paths to calibration images for each camera
-size_of_marker = 0.04  # Marker side length in meters
+size_of_marker = 26 # Size of the aruco marker in mm
 output_file = ['calibration_results_cam1.npz', 'calibration_results_cam2.npz'] # Output file names
 aruco_dict_type = cv2.aruco.DICT_4X4_50 # Aruco dictionary type
 max_iterations = 1000  # Max iterations for corner refinement
