@@ -1,8 +1,6 @@
 import cv2 
 import glob
-
 import numpy as np
-
 import os
 
 """
@@ -19,14 +17,16 @@ Need to change following parameters for different setups:
 - stereo_parameters_path: Path to npz file containing stereo calibration parameters.
 - target_location: Path to the directory where depth maps will be saved.
 """
-file_path = ('/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam0/camera0pos0.jpg',
-             '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam1/camera1pos0.jpg') # Paths to calibration images for each camera
-num_disparities = 16*5  # Must be divisible by 16 this shows the maximum disparity minus minimum disparity
-block_size = 15  # Must be odd and >=1 this is the linear size of the blocks compared by the algorithm.
-camera_parameters_path_left = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/calibration_results_cam1.npz'
-camera_parameters_path_right = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/calibration_results_cam2.npz'
-stereo_parameters_path = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/stereo_calibration_results.npz'
-target_location = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/DepthMaps' # Directory to save depth maps
+
+file_path = ('E:\\BIOmimicry\\Code\\BiomimicryCode\\Tezt2\\Cam0\\camera0pos0.jpg',
+             'E:\\BIOmimicry\\Code\\BiomimicryCode\\Tezt2\\Cam1\\camera1pos0.jpg')  # Paths to calibration images for each camera
+num_disparities = 16 * 5  # Must be divisible by 16
+block_size = 15  # Must be odd and >=1
+camera_parameters_path_left = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\calibration_results_cam1.npz'
+camera_parameters_path_right = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\calibration_results_cam2.npz'
+stereo_parameters_path = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\stereo_calibration_results.npz'
+target_location = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\Tezt2\\DepthMaps'  # Directory to save depth maps
+
 
 def load_stereo_images(left_image_path, right_image_path):
     """
@@ -41,6 +41,7 @@ def load_stereo_images(left_image_path, right_image_path):
         raise ValueError("Could not load one of the images. Check the file paths.")
     return left_image, right_image
 
+
 def compute_depth_map(left_image, right_image, camera_parameters, stereo_parameters):
     """
     Compute depth map from stereo images.
@@ -52,40 +53,50 @@ def compute_depth_map(left_image, right_image, camera_parameters, stereo_paramet
     """
     left_camera_matrix = camera_parameters[0]
     right_camera_matrix = camera_parameters[1]
+
     # Create StereoBM object
     stereo = cv2.StereoBM_create(numDisparities=num_disparities, blockSize=block_size)
-    
+
     # Compute disparity map
     disparity_map = stereo.compute(left_image, right_image).astype(np.float32) / 16.0
-    
+
     # Convert disparity to depth
     focal_length = left_camera_matrix[0, 0]  # Assuming fx is at (0,0)
-    baseline = np.linalg.norm(stereo_parameters['translation_vector'])
-    
-    with np.errstate(divide='ignore'):  
+    baseline = np.linalg.norm(stereo_parameters['T'])
+
+    with np.errstate(divide='ignore'):
         depth_map = (focal_length * baseline) / disparity_map
-        depth_map[disparity_map == 0] = 0  # Set depth to 0 where disparity is 0
-    
+        depth_map[disparity_map == 0] = 0
+
     return depth_map
+
 
 if __name__ == "__main__":
     # Load camera and stereo parameters
     camera_params_left = np.load(camera_parameters_path_left)
     camera_params_right = np.load(camera_parameters_path_right)
     stereo_params = np.load(stereo_parameters_path)
+
+    left_camera_matrix = camera_params_left['camera_matrix']
+    right_camera_matrix = camera_params_right['camera_matrix']
+    translation_vector = stereo_params['T']
+
+    camera_params = (left_camera_matrix, right_camera_matrix)
+    stereo_params = {'T': translation_vector}
+
     print("Camera and stereo parameters loaded.")
     print("Computing depth map.")
     print(camera_parameters_path_left)
-    camera_params = (camera_params_left, camera_params_right)
-    # load stereo images
+
+    # Load stereo images
     left_image_path = file_path[0]
     right_image_path = file_path[1]
     left_image, right_image = load_stereo_images(left_image_path, right_image_path)
+
     depth_map = compute_depth_map(left_image, right_image, camera_params, stereo_params)
-    
+
     # Display depth map
-    cv2.imshow('Depth Map', depth_map / np.max(depth_map))  # Normalize for display
+    print('Depth map computed. Displaying result in a window.')
+    cv2.imshow('Depth Map', depth_map / np.max(depth_map))
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-
-    
