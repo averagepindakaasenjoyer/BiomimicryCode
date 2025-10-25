@@ -16,6 +16,7 @@ Need to change following parameters for different setups:
     - right camera parameters
 - stereo_parameters_path: Path to npz file containing stereo calibration parameters.
 - target_location: Path to the directory where depth maps will be saved.
+- show_depth_map: Boolean flag to display the computed depth map.
 """
 
 file_path = ('E:\\BIOmimicry\\Code\\BiomimicryCode\\Tezt2\\Cam0\\camera0pos0.jpg',
@@ -26,6 +27,7 @@ camera_parameters_path_left = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\calibration
 camera_parameters_path_right = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\calibration_results_cam2.npz'
 stereo_parameters_path = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\stereo_calibration_results.npz'
 target_location = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\Tezt2\\DepthMaps'  # Directory to save depth maps
+show_depth_map = False  # Flag to display depth map
 
 
 def load_stereo_images(left_image_path, right_image_path):
@@ -97,6 +99,11 @@ if __name__ == "__main__":
 
     # Display depth map
     print('Depth map computed. Displaying result in a window.')
-    cv2.imshow('Depth Map', depth_map / np.max(depth_map))
-    cv2.waitKey(0)
+    depth_map_display = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    if show_depth_map:
+        cv2.imshow('Depth Map', depth_map_display)
+        cv2.waitKey(0)
+    # Save depth map
+    cv2.imwrite(os.path.join(target_location, 'depth_map.png'), depth_map_display)  
+    print(f'Depth map saved to {target_location}')
     cv2.destroyAllWindows()
