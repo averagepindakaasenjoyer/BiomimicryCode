@@ -2,6 +2,7 @@ import cv2
 import glob
 import numpy as np
 import os
+import time
 
 """
 This module provides functions to estimate depth from stereo images using OpenCV. 
@@ -19,14 +20,14 @@ Need to change following parameters for different setups:
 - show_depth_map: Boolean flag to display the computed depth map.
 """
 
-file_path = ('E:\\BIOmimicry\\Code\\BiomimicryCode\\Tezt2\\Cam0\\camera0pos0.jpg',
-             'E:\\BIOmimicry\\Code\\BiomimicryCode\\Tezt2\\Cam1\\camera1pos0.jpg')  # Paths to calibration images for each camera
+file_path = ('/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam0/camera0pos0.jpg',
+             '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam1/camera1pos0.jpg')  # Paths to stereo image pairs
 num_disparities = 16 * 5  # Must be divisible by 16
 block_size = 15  # Must be odd and >=1
-camera_parameters_path_left = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\calibration_results_cam1.npz'
-camera_parameters_path_right = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\calibration_results_cam2.npz'
-stereo_parameters_path = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\stereo_calibration_results.npz'
-target_location = 'E:\\BIOmimicry\\Code\\BiomimicryCode\\Tezt2\\DepthMaps'  # Directory to save depth maps
+camera_parameters_path_left = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/calibration_results_cam1.npz'
+camera_parameters_path_right = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/calibration_results_cam2.npz'
+stereo_parameters_path = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/stereo_calibration_results.npz'
+target_location = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/DepthMaps'  # Directory to save depth maps
 show_depth_map = False  # Flag to display depth map
 
 
@@ -74,6 +75,7 @@ def compute_depth_map(left_image, right_image, camera_parameters, stereo_paramet
 
 
 if __name__ == "__main__":
+    start_time = time.time()
     # Load camera and stereo parameters
     camera_params_left = np.load(camera_parameters_path_left)
     camera_params_right = np.load(camera_parameters_path_right)
@@ -104,6 +106,8 @@ if __name__ == "__main__":
         cv2.imshow('Depth Map', depth_map_display)
         cv2.waitKey(0)
     # Save depth map
+    time_elapsed = time.time() - start_time
+    print(f'Depth map computation completed in {time_elapsed:.2f} seconds.')
     cv2.imwrite(os.path.join(target_location, 'depth_map.png'), depth_map_display)  
     print(f'Depth map saved to {target_location}')
     cv2.destroyAllWindows()
