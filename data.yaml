@@ -1,0 +1,8 @@
+nc: 2
+
+train: ../Strawberry_Flower_Dataset/images/train
+val: ../Strawberry_Flower_Dataset/images/val
+
+names:
+  0: flower
+  1: flower-bud
