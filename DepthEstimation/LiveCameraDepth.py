@@ -75,7 +75,7 @@ def compute_depth_map(left_image, right_image, camera_parameters, stereo_paramet
     right_camera_matrix = camera_parameters[1]
 
     # Create StereoBM object
-    stereo = cv2.StereoBM_create(numDisparities=num_disparities, blockSize=block_size)
+    stereo = cv2.StereoSGBM_create(numDisparities=num_disparities, blockSize=block_size)
 
     # Compute disparity map
     disparity_map = stereo.compute(left_image, right_image).astype(np.float32) / 16.0
