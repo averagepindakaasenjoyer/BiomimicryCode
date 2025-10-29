@@ -26,12 +26,22 @@ show_depth_map = False  # Flag to display depth map
 pixel_to_determine = (320, 240)  # Pixel coordinates to determine depth (x, y)
 
 
-def live_camera_data():
+def live_camera_data(camera_index_left, camera_index_right):
     """
     Capture live video from two cameras and prepare frames for depth estimation.
     returns: left_frame, right_frame
     """
     # Open video capture for left and right cameras (camera indices may need to be adjusted)
+    cap_left = cv2.VideoCapture(camera_index_left)
+    cap_right = cv2.VideoCapture(camera_index_right)
+
+    if not cap_left.isOpened() or not cap_right.isOpened():
+        raise ValueError("Could not open one of the camera streams. Check camera connections and indices.")
+
+    ret_left, left_frame = cap_left.read()
+    ret_right, right_frame = cap_right.read()
+    if not ret_left or not ret_right:
+        raise ValueError("Could not read frames from one of the cameras.")
     cap_left = cv2.VideoCapture(0)
     cap_right = cv2.VideoCapture(1)
 
@@ -80,8 +90,33 @@ def compute_depth_map(left_image, right_image, camera_parameters, stereo_paramet
 
     return depth_map
 
+def check_camera_indices():
+    """
+    This function loops over all possible indices for the cameras and returns the first two that are found.
+    This way the code works even if the camera indices are not 0 and 1.
+    returns: left_camera_index, right_camera_index
+    """
+    left_camera_index = None
+    right_camera_index = None
+    for i in range(10): 
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            if ret:
+                if left_camera_index is None:
+                    left_camera_index = i
+                else:
+                    right_camera_index = i
+                    break
+        cap.release()
+    if left_camera_index is None or right_camera_index is None:
+        raise ValueError("No two cameras found, check camera connections.")
+    return left_camera_index, right_camera_index
 
 if __name__ == "__main__":
+    left_camera_index, right_camera_index = check_camera_indices()
+    print(f"Using camera indices - Left: {left_camera_index}, Right: {right_camera_index}")
+
     # Load camera and stereo parameters
     camera_params_left = np.load(camera_parameters_path_left)
     camera_params_right = np.load(camera_parameters_path_right)
@@ -98,7 +133,7 @@ if __name__ == "__main__":
     print("Computing depth map.")
     print(camera_parameters_path_left)
     start_time = time.time()
-    left_frame, right_frame = live_camera_data()
+    left_frame, right_frame = live_camera_data(left_camera_index, right_camera_index)
     depth_map = compute_depth_map(left_frame, right_frame, camera_params, stereo_params)
 
 
