@@ -16,7 +16,6 @@ Need to change following parameters for different setups:
     - right camera parameters
 - stereo_parameters_path: Path to npz file containing stereo calibration parameters.
 - show_depth_map: Boolean flag to display the computed depth map.
-- picamera flag: Boolean flag to use Raspberry Pi camera module.
 """
 num_disparities = 16 * 5  # Must be divisible by 16
 block_size = 15  # Must be odd and >=1
@@ -26,12 +25,6 @@ stereo_parameters_path = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/Biomimicry
 target_location = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/DepthMaps'  # Directory to save depth maps
 show_depth_map = False  # Flag to display depth map
 pixel_to_determine = (320, 240)  # Pixel coordinates to determine depth (x, y)
-picamera = False  # Flag to use Raspberry Pi camera module
-
-if picamera:
-    from picamera.array import PiRGBArray
-    from picamera import PiCamera
-    import time
 
 def live_camera_data(camera_index_left, camera_index_right):
     """
