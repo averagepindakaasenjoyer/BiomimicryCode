@@ -3,6 +3,9 @@ import glob
 import numpy as np
 import os
 import time
+import dotenv
+
+dotenv.load_dotenv()
 
 """
 
@@ -19,10 +22,10 @@ Need to change following parameters for different setups:
 """
 num_disparities = 16 * 5  # Must be divisible by 16
 block_size = 15  # Must be odd and >=1
-camera_parameters_path_left = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/calibration_results_cam1.npz'
-camera_parameters_path_right = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/calibration_results_cam2.npz'
-stereo_parameters_path = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/stereo_calibration_results.npz'
-target_location = '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/DepthMaps'  # Directory to save depth maps
+camera_parameters_path_left = os.getenv("LEFT_CAM_PARAMS")
+camera_parameters_path_right = os.getenv("RIGHT_CAM_PARAMS")
+stereo_parameters_path = os.getenv("STEREO_PARAMS")
+target_location = os.getenv("TARGET_LOCATION_DEPTHMAPS")  # Directory to save depth maps
 show_depth_map = False  # Flag to display depth map
 pixel_to_determine = (320, 240)  # Pixel coordinates to determine depth (x, y)
 

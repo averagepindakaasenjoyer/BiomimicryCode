@@ -1,8 +1,6 @@
+train: ../Combined_Dataset/images/train
+val: ../Combined_Dataset/images/val
+test: ../Combined_Dataset/images/test
+
 nc: 2
-
-train: ../Strawberry_Flower_Dataset/images/train
-val: ../Strawberry_Flower_Dataset/images/val
-
-names:
-  0: flower
-  1: flower-bud
+names: ['flower', 'flower-bud']
