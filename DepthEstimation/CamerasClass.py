@@ -154,9 +154,9 @@ class Cameras:
 
             # Return the calibration results for all cameras
             return results
+        
         def compute_depth_at_point(self, x, y):
-            # Placeholder for depth computation at a specific point
-            pass
+            
 
     class detection:
         def __init__(self, object_detection_parameters):
