@@ -309,13 +309,49 @@ class Cameras:
         def __init__(self, object_detection_parameters):
             self.object_detection_parameters = object_detection_parameters
 
-        def detect_objects_in_image(self, image):
+        def detect_objects_in_image(self, image, yolo_model):
+            """
+            function calls on yolo algorithm to detect objects in the image.
+            arguments: image -- input image for object detection
+            returns: list of detected objects with bounding boxes and confidence scores
+            """
             # Placeholder for object detection logic
             pass
 
-        def get_bounding_boxes(self, detected_objects):
-            # Placeholder for extracting bounding boxes from detected objects
-            pass
+        def center_bounding_boxes(self, bounding_boxes,camera):
+            """
+            function to get the center points of bounding boxes.
+            arguments: bounding_boxes -- list of bounding boxes
+                       camera -- camera object to get camera info to transform percentages to pixels
+            returns: list of center points
+            """
+            centers = []
+            camera_info = camera.camera_info()
+            for box in bounding_boxes:
+                x, y, w, h = box
+                x = x * camera_info['image_width']
+                y = y * camera_info['image_height']
+                w = w * camera_info['image_width']
+                h = h * camera_info['image_height']
+                center_x = x + w / 2
+                center_y = y + h / 2
+                centers.append((center_x, center_y))
+            return centers
+        
+
+        def get_movement_distances(self, flowers_centers):
+            """
+            Function to calculate the x y axis movement in pixels from center of frame to flower center.
+            arguments: flowers_centers -- list of flower center points
+            returns: list of tuples containing x and y distances
+            """
+            movements = []
+            for center in flowers_centers:
+                center_x, center_y = center
+                movement_x = center_x - (self.object_detection_parameters['image_width'] // 2)
+                movement_y = center_y - (self.object_detection_parameters['image_height'] // 2)
+                movements.append((movement_x, movement_y))
+            return movements
 
 if __name__ == "__main__":
     cameras_system = Cameras()
