@@ -27,10 +27,9 @@ import os
 
 class Cameras:
     def __init__(self):
-        self.camera = self.camera()
-        self.depth_estimation = self.depth_estimation()
-        self.detection = self.detection()
-
+        self.depth_estimation = None
+        self.detection = None 
+        self.cameras = []
     def image_paths_from_folder(folder_path, extensions=None):
         """
         Retrieve image paths from a folder. Searches a set of common extensions when
@@ -53,6 +52,51 @@ class Cameras:
         image_paths = sorted(list(dict.fromkeys(image_paths)))
         return image_paths
 
+    def shoot_image(self, camera=None, picamera=False):
+        """
+        Capture an image from the specified camera.
+
+        arguments:
+            camera -- camera object to use (default is the first camera in the list)
+            picamera -- boolean indicating if using Raspberry Pi Camera (default is False)
+        returns: captured image
+        """
+        if camera is None:
+            if len(self.cameras) == 0:
+                raise ValueError("No cameras available to shoot image from.")
+            camera = self.cameras[0]
+
+        if picamera:
+            from picamera import PiCamera
+            from picamera.array import PiRGBArray
+            camera = PiCamera()
+            raw_capture = PiRGBArray(camera)
+            camera.capture(raw_capture, format="bgr")
+            image = raw_capture.array
+            camera.close()
+        else:
+            cap = cv2.VideoCapture(camera.camera_index)
+            ret, image = cap.read()
+            cap.release()
+            if not ret:
+                raise RuntimeError(f"Failed to capture image from camera index {camera.camera_index}")
+        return image
+    
+    def shoot_images_from_all_cameras(self, picamera=False):
+        """
+        Capture images from all available cameras.
+
+        arguments:
+            picamera -- boolean indicating if using Raspberry Pi Camera (default is False)
+        returns: list of captured images
+        """
+        images = []
+        for cam in self.cameras:
+            img = self.shoot_image(camera=cam, picamera=picamera)
+            images.append(img)
+        return images
+
+
 
     class camera:
         def __init__(self, intrinsic_parameters=None, camera_index=None, image_width=None, image_height=None):
@@ -60,6 +104,25 @@ class Cameras:
             self.camera_index = camera_index
             self.image_width = image_width
             self.image_height = image_height
+            Cameras().cameras.append(self)
+
+        def get_camera_indices(self, max_index=10):
+            """
+            Detect available camera indices up to max_index.
+
+            arguments:
+                max_index -- maximum index to check (default is 10)
+            returns: list of available camera indices
+            """
+            unavailable_indices = Cameras().camera_indices if hasattr(Cameras(), 'camera_indices') else []
+            for index in range(max_index):
+                cap = cv2.VideoCapture(index)
+                if cap.isOpened() and index not in unavailable_indices:
+                    available_index = index
+                    cap.release()
+            self.camera_indices = index
+            Cameras().camera_indices = unavailable_indices + [available_index]
+            return available_index
 
         def _calibrate(self, images, aruco_dict, parameters, criteria, size_of_marker):
             """
@@ -155,8 +218,92 @@ class Cameras:
             # Return the calibration results for all cameras
             return results
         
-        def compute_depth_at_point(self, x, y):
+        def compute_depth_at_point(self, depth_map, x, y):
+            """
+            Compute the depth at a specific point in the depth map.
+            arguments: depth_map -- computed depth map
+                       x -- x coordinate of the point
+                       y -- y coordinate of the point
+            returns: depth at the specified point
+            """
+            if x < 0 or x >= depth_map.shape[1] or y < 0 or y >= depth_map.shape[0]:
+                raise ValueError("Coordinates are out of bounds of the depth map.")
+            return depth_map[y, x]
+        
+        def camera_info(self):
+            """
+            Returns information about the camera.
+            returns: dictionary containing camera index, intrinsic parameters, image width and height
+            """
+            info = {
+                'camera_index': self.camera_index,
+                'intrinsic_parameters': self.intrinsic_parameters,
+                'image_width': self.image_width,
+                'image_height': self.image_height
+            }
+            return info
+        
+        def set_parameters(self, intrinsic_parameters=None, camera_index=None, image_width=None, image_height=None):
+            """
+            Set or update camera parameters.
+            arguments: intrinsic_parameters -- new intrinsic parameters
+                       camera_index -- new camera index
+                       image_width -- new image width
+                       image_height -- new image height
+            """
+            if intrinsic_parameters is not None:
+                self.intrinsic_parameters = intrinsic_parameters
+            if camera_index is not None:
+                self.camera_index = camera_index
+            if image_width is not None:
+                self.image_width = image_width
+            if image_height is not None:
+                self.image_height = image_height
+
+        
+    class depth_estimation:
+        def __init__(self, stereo_parameters=None):
+            self.stereo_parameters = stereo_parameters
+
+        def _compute_depth_map(self,left_image, right_image):
+            """
+            Compute depth map from stereo images.
+            arguments: left_image -- left image of the stereo pair
+                       right_image -- right image of the stereo pair
+                       camera_parameters -- dictionary containing camera matrices and distortion coefficients
+            returns: depth_map
+            """
+            if len(self.cameras) < 2:
+                raise ValueError("At least two cameras are required for depth estimation.")
             
+            left_camera_matrix = Cameras().cameras[0].intrinsic_parameters
+            right_camera_matrix = Cameras().cameras[1].intrinsic_parameters
+
+            # Create StereoBM object
+            stereo = cv2.StereoSGBM_create(numDisparities=16*5, blockSize=5)
+
+            # Compute disparity map
+            disparity_map = stereo.compute(left_image, right_image).astype(np.float32) / 16.0
+
+            # Convert disparity to depth
+            focal_length = left_camera_matrix[0, 0]  # Assuming fx is at (0,0)
+            baseline = np.linalg.norm(self.stereo_parameters['T'])
+
+            with np.errstate(divide='ignore'):
+                depth_map = (focal_length * baseline) / disparity_map
+                depth_map[disparity_map == 0] = 0
+
+            return depth_map
+
+        def depth_map(self):
+            """shoots images from the first two cameras and computes the depth map."""
+            if len(self.cameras) < 2:
+                raise ValueError("At least two cameras are required for depth estimation.")
+
+            left_image = Cameras().shoot_image(camera=self.cameras[0])
+            right_image = Cameras().shoot_image(camera=self.cameras[1])
+
+            return self._compute_depth_map(left_image, right_image)
 
     class detection:
         def __init__(self, object_detection_parameters):
@@ -169,3 +316,16 @@ class Cameras:
         def get_bounding_boxes(self, detected_objects):
             # Placeholder for extracting bounding boxes from detected objects
             pass
+
+if __name__ == "__main__":
+    cameras_system = Cameras()
+    left_camera = cameras_system.camera(camera_index=0)
+    right_camera = cameras_system.camera(camera_index=1)
+    print(f"Initialized cameras with indices: {left_camera.camera_index}, {right_camera.camera_index}")
+    # Example of shooting images from both cameras
+    left_image = cameras_system.shoot_image(camera=left_camera)
+    right_image = cameras_system.shoot_image(camera=right_camera)
+    print(f"Captured images from both cameras: Left image shape {left_image.shape}, Right image shape {right_image.shape}")
+    left_camera.camera_index = left_camera.camera_index()
+    right_camera.camera_index = right_camera.camera_index()
+    print(f"Detected camera indices: Left camera index {left_camera.camera_index}, Right camera index {right_camera.camera_index}")
