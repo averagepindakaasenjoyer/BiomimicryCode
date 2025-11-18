@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 import glob
 import os
+import torch
 
 
 class Cameras:
@@ -265,7 +266,7 @@ class Cameras:
         def __init__(self, stereo_parameters=None):
             self.stereo_parameters = stereo_parameters
 
-        def _compute_depth_map(self,left_image, right_image):
+        def _compute_depth_map(self, left_image, right_image):
             """
             Compute depth map from stereo images.
             arguments: left_image -- left image of the stereo pair
@@ -308,17 +309,60 @@ class Cameras:
     class detection:
         def __init__(self, object_detection_parameters):
             self.object_detection_parameters = object_detection_parameters
+            self.confidence_threshold = 0.5
+            self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-        def detect_objects_in_image(self, image, yolo_model):
+        def Yolo_flower_detection(self, image, yolo_model, visual_feedback=False):
             """
             function calls on yolo algorithm to detect objects in the image.
             arguments: image -- input image for object detection
-            returns: list of detected objects with bounding boxes and confidence scores
+            returns: tuple of detected objects with bounding boxes and confidence scores and class_ids
             """
-            # Placeholder for object detection logic
-            pass
+            results = yolo_model.predict(source=image, conf=self.confidence_threshold, device=self.device, verbose=False)
 
-        def center_bounding_boxes(self, bounding_boxes,camera):
+            r = results[0]
+
+            if hasattr(r, "boxes") and r.boxes is not None:
+                boxes_obj = r.boxes
+
+                xyxy = getattr(boxes_obj, "xyxy", None) # x1, y1, x2, y2
+                confs = getattr(boxes_obj, "conf", None)
+                class_ids = getattr(boxes_obj, "cls", None)
+
+                def to_np(x):
+                    if x is None:
+                        return None
+                    try:
+                        return x.cpu().numpy()
+                    except Exception:
+                        return np.array(x)
+
+                xyxy = to_np(xyxy)
+                confs = to_np(confs)
+                class_ids = to_np(class_ids)
+
+                if visual_feedback:
+                    names = getattr(yolo_model, "names", {})
+                    for i, box in enumerate(xyxy):
+                        x1, y1, x2, y2 = map(int, box[:4])
+                        score = float(confs[i]) if confs is not None else 0.0
+                        cls_id = int(class_ids[i]) if class_ids is not None else -1
+                        label = f"{names.get(cls_id, str(cls_id))} {score:.2f}"
+                        color = (0, 255, 0)
+                        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(image, label, (x1, max(y1 - 6, 10)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+                        
+                    return image
+                
+                if xyxy is not None:
+                    return (xyxy, confs, class_ids)
+            else:
+                print("No boxes found in results.")
+                return ([], [], [])
+            
+
+        def center_bounding_boxes(self, bounding_boxes, camera):
             """
             function to get the center points of bounding boxes.
             arguments: bounding_boxes -- list of bounding boxes

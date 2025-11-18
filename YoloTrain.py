@@ -39,7 +39,7 @@ def run_training_validation(device):
 
     # two-stage training params
     freeze_epochs = 10  # freeze backbone for these first epochs
-    total_epochs = 100
+    total_epochs = 1000
     early_stop_patience = 3  # number of chunks with no improvement before stopping
     chunk_size = 5  # train in chunks after unfreezing to allow early stopping checks
 
