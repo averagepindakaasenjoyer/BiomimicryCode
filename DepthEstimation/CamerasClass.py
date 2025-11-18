@@ -352,16 +352,71 @@ class Cameras:
                 movement_y = center_y - (self.object_detection_parameters['image_height'] // 2)
                 movements.append((movement_x, movement_y))
             return movements
+        def detect_circel(self, image):
+            """
+            Function to detect yellow circles in the image.
+            arguments: image -- input image for circle detection
+            returns: coordinates of detected circles in percentages of image size
+            """
+            recognized_circles = []
+            # Convert to HSV color space
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            # Define yellow color range in HSV
+            lower_yellow = np.array([20, 100, 100])
+            upper_yellow = np.array([30, 255, 255])
+            # Create a mask for yellow color
+            mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+            # Apply Hough Circle Transform
+            # apply the mask to the original image and convert to grayscale for HoughCircles
+            masked = cv2.bitwise_and(image, image, mask=mask)
+            gray_masked = cv2.cvtColor(masked, cv2.COLOR_BGR2GRAY)
+
+            # reduce noise — larger kernel helps remove small spurious blobs
+            gray_masked = cv2.medianBlur(gray_masked, 7)
+            gray_masked = cv2.GaussianBlur(gray_masked, (9, 9), 0)
+
+            # set min/max radius relative to image size to prefer one large circle
+            h, w = image.shape[:2]
+            min_r = max(40, int(min(h, w) * 0.1))
+            max_r = int(min(h, w) * 0.5)
+
+            # Use HoughCircles on the preprocessed grayscale image with tuned parameters:
+            # - dp > 1 to reduce resolution and false positives
+            # - minDist large so only one circle is found
+            # - higher param1 for Canny edge detection, higher param2 to require stronger accumulator votes
+            circles = cv2.HoughCircles(gray_masked, cv2.HOUGH_GRADIENT,
+                                       dp=1.5,
+                                       minDist=max(h, w) // 2,
+                                       param1=100,
+                                       param2=40,
+                                       minRadius=min_r,
+                                       maxRadius=max_r)
+            print("Detected circles:", circles)
+            if circles is not None:
+                circles = np.uint16(np.around(circles))
+                for i in circles[0, :]:
+                    center_x = i[0] / image.shape[1]
+                    center_y = i[1] / image.shape[0]
+                    recognized_circles.append((center_x, center_y))
+
+            X_shape, Y_shape = image.shape[1], image.shape[0]
+            precentage_circles = [(x / X_shape, y / Y_shape) for (x, y) in recognized_circles]
+            return precentage_circles
+
+
+
+
 
 if __name__ == "__main__":
-    cameras_system = Cameras()
-    left_camera = cameras_system.camera(camera_index=0)
-    right_camera = cameras_system.camera(camera_index=1)
-    print(f"Initialized cameras with indices: {left_camera.camera_index}, {right_camera.camera_index}")
-    # Example of shooting images from both cameras
-    left_image = cameras_system.shoot_image(camera=left_camera)
-    right_image = cameras_system.shoot_image(camera=right_camera)
-    print(f"Captured images from both cameras: Left image shape {left_image.shape}, Right image shape {right_image.shape}")
-    left_camera.camera_index = left_camera.camera_index()
-    right_camera.camera_index = right_camera.camera_index()
-    print(f"Detected camera indices: Left camera index {left_camera.camera_index}, Right camera index {right_camera.camera_index}")
+    # Load image and run circle detection without relying on camera objects
+    image_path = "/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/GeleCirkel.JPG"
+    image = cv2.imread(image_path)
+    if image is None:
+        raise FileNotFoundError(f"Image not found: {image_path}")
+    detector = Cameras.detection(object_detection_parameters={'image_width': image.shape[1], 'image_height': image.shape[0]})
+    circles = detector.detect_circel(image)
+    camera1 = Cameras.camera(camera_index=0, intrinsic_parameters=np.eye(3), image_width=image.shape[1], image_height=image.shape[0])
+    print("Detected circles (in percentages):", circles)
+    movements = detector.get_movement_distances(circles)
+    print("Movement distances (in pixels):", movements)
+    print("Image width:", image.shape[1], "Image height:", image.shape[0])
