@@ -314,9 +314,9 @@ class Cameras:
 
         def Yolo_flower_detection(self, image, yolo_model, visual_feedback=False):
             """
-            function calls on yolo algorithm to detect objects in the image.
-            arguments: image -- input image for object detection
-            returns: tuple of detected objects with bounding boxes and confidence scores and class_ids
+            function calls on yolo algorithm to detect flowers in the image.
+            arguments: image -- input image for object detection, yolo_model -- loaded yolo model, visual_feedback -- flag to indicate if visual feedback is needed
+            returns: tuple of detected bounding boxes and confidence scores and class_ids
             """
             results = yolo_model.predict(source=image, conf=self.confidence_threshold, device=self.device, verbose=False)
 
@@ -343,6 +343,8 @@ class Cameras:
 
                 if visual_feedback:
                     names = getattr(yolo_model, "names", {})
+
+                    # Draw bounding boxes on the image
                     for i, box in enumerate(xyxy):
                         x1, y1, x2, y2 = map(int, box[:4])
                         score = float(confs[i]) if confs is not None else 0.0
@@ -352,11 +354,22 @@ class Cameras:
                         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
                         cv2.putText(image, label, (x1, max(y1 - 6, 10)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+                    
+                    # Print concise summary for debugging
+                    n = 0 if xyxy is None else xyxy.shape[0]
+                    print(f"Detections: {n} boxes")
+                    if xyxy is not None:
+                        print("xyxy:\n", xyxy)
+                    if confs is not None:
+                        print("confs:\n", confs)
+                    if class_ids is not None:
+                        print("class_ids:\n", class_ids)
+                    print("class names mapping:\n", names)
                         
                     return image
                 
                 if xyxy is not None:
-                    return (xyxy, confs, class_ids)
+                    return (xyxy, confs, class_ids) # tuple: (bboxes, conf, class)
             else:
                 print("No boxes found in results.")
                 return ([], [], [])
