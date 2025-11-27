@@ -205,15 +205,36 @@ def run(labels_dir,
     # update data.yaml: remove the name(s) and set new nc if requested
     if data is not None and update_data_yaml:
         old_names = data.get('names')
-        # normalize names to list
+        # normalize names to list when possible, but be defensive if format is unexpected
+        normalized_names = None
         if isinstance(old_names, dict):
-            idx_names = [None] * (max(int(k) for k in old_names.keys()) + 1)
-            for k, v in old_names.items():
-                idx_names[int(k)] = v
-            old_names = idx_names
+            try:
+                idx_names = [None] * (max(int(k) for k in old_names.keys()) + 1)
+                for k, v in old_names.items():
+                    idx_names[int(k)] = v
+                normalized_names = idx_names
+            except Exception:
+                normalized_names = None
+        elif isinstance(old_names, list):
+            normalized_names = list(old_names)
+
+        # Build new names list for remaining_ids, using fallbacks when entries are missing
         new_names = []
         for old_id in remaining_ids:
-            new_names.append(old_names[old_id])
+            name = None
+            if normalized_names is not None and 0 <= old_id < len(normalized_names):
+                name = normalized_names[old_id]
+            # try fallback to dict-style mapping from the original data if present
+            if name is None:
+                raw_names = data.get('names')
+                if isinstance(raw_names, dict):
+                    name = raw_names.get(str(old_id)) or raw_names.get(int(old_id))
+            # final fallback: placeholder name
+            if name is None:
+                name = f"class{old_id}"
+                print(f"Warning: missing name for old id {old_id} in data.yaml; using placeholder '{name}'")
+            new_names.append(name)
+
         data['nc'] = len(new_names)
         # put names as list (Ultralytics accepts list or dict)
         data['names'] = new_names
@@ -235,12 +256,12 @@ if __name__ == '__main__':
     DATA_YAML = os.getenv("YAML_PATH")  # optional path to data.yaml
 
     # remove either by name (reads names from DATA_YAML) or by id
-    REMOVE_BY = 'name'  # 'name' or 'id'
-    REMOVE_CLASS_NAME = 'flower-bud'  # used if REMOVE_BY == 'name'
-    REMOVE_CLASS_ID = None  # used if REMOVE_BY == 'id'
+    REMOVE_BY = 'id'  # 'name' or 'id'
+    REMOVE_CLASS_NAME = ['unripe', 'ripe']  # used if REMOVE_BY == 'name'
+    REMOVE_CLASS_ID = 1  # used if REMOVE_BY == 'id'
 
     # Apply behavior
-    REMOVE_EMPTY_IMAGES = True  # move images with no labels to labels/removed_images
+    REMOVE_EMPTY_IMAGES = False  # move images with no labels to labels/removed_images
     DO_BACKUP = True
     UPDATE_DATA_YAML = True
 

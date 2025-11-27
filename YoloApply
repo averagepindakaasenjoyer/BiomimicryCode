@@ -5,7 +5,7 @@ import torch
 from ultralytics import YOLO
 
 # Path to best model checkpoint
-CKPT = r"runs\detect\train6\weights\best.pt"
+CKPT = r"runs\detect\train12\weights\best.pt"
 
 # device
 device = "cuda:0" if torch.cuda.is_available() else "cpu"

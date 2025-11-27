@@ -14,6 +14,119 @@ import sys
 
 dotenv.load_dotenv()
 
+# Augmentation configuration
+AUGMENTATION = {
+    "enable": True,
+    "translate": 0.1,
+    "scale": 0.5,
+    "shear": 5.0,
+    "degrees": 10.0,
+    "perspective": 0.0002,
+    "erasing": 0.02,
+}
+
+# Training hyperparameters (weight decay and dropout)
+TRAINING_HYP = {
+    "weight_decay": 0.0005,  # L2 regularization (passed to optimizer/trainer)
+    "dropout": 0.0,          # Best-effort: will set p on existing Dropout modules if present
+}
+
+
+def apply_dropout(yolo_model, p):
+    """Best-effort: set dropout probability `p` on any existing Dropout modules.
+    This does not add new Dropout layers; it only updates existing nn.Dropout/Dropout2d/3d modules.
+    """
+    if p is None or p <= 0.0:
+        return 0
+    changed = 0
+    try:
+        import torch.nn as nn
+        m = getattr(yolo_model, 'model', None)
+        if m is None:
+            print("apply_dropout: could not access underlying model (no .model attribute)")
+            return 0
+        for mm in m.modules():
+            if isinstance(mm, (nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
+                try:
+                    mm.p = float(p)
+                    changed += 1
+                except Exception:
+                    pass
+    except Exception as e:
+        print("apply_dropout: error while setting dropout:", e)
+    if changed == 0:
+        print("apply_dropout: no Dropout modules found; consider adding Dropout layers manually if needed")
+    else:
+        print(f"apply_dropout: updated dropout p={p} on {changed} modules")
+    return changed
+
+
+# -------------------- Hyperparameter tuning config + helper --------------------
+# Set `HYPERPARAM_TUNING['enable'] = True` to run automatic tuning before training.
+HYPERPARAM_TUNING = {
+    'enable': False,
+    'model': 'yolo11n.pt',
+    'data': 'data.yaml',
+    'epochs': 30,
+    'iterations': 300,
+    'optimizer': 'AdamW',
+    'space': {
+        'lr0': (1e-5, 1e-1),
+        'degrees': (0.0, 45.0),
+    },
+    'plots': False,
+    'save': False,
+    'val': False,
+}
+
+
+def run_hyperparameter_tuning(device='cpu'):
+    """Run Ultralytics' `model.tune(...)` to search for good hyperparameters.
+
+    This is a convenience wrapper that reads `HYPERPARAM_TUNING` and calls
+    `YOLO(...).tune(...)`. It prints progress and handles a compatibility
+    fallback if `device` is not an accepted argument to `tune()`.
+    """
+    if not HYPERPARAM_TUNING.get('enable'):
+        print('Hyperparameter tuning disabled (set HYPERPARAM_TUNING["enable"]=True to enable)')
+        return None
+
+    model_path = HYPERPARAM_TUNING.get('model')
+    print(f"Starting hyperparameter tuning using model={model_path} data={HYPERPARAM_TUNING.get('data')}")
+    try:
+        m = YOLO(model_path)
+    except Exception as e:
+        print('Error loading model for tuning:', e)
+        return None
+
+    tune_kwargs = {
+        'data': HYPERPARAM_TUNING.get('data'),
+        'epochs': HYPERPARAM_TUNING.get('epochs', 30),
+        'iterations': HYPERPARAM_TUNING.get('iterations', 300),
+        'optimizer': HYPERPARAM_TUNING.get('optimizer', 'AdamW'),
+        'space': HYPERPARAM_TUNING.get('space'),
+        'plots': HYPERPARAM_TUNING.get('plots', False),
+        'save': HYPERPARAM_TUNING.get('save', False),
+        'val': HYPERPARAM_TUNING.get('val', False),
+    }
+
+    # Try passing device if supported; otherwise retry without it.
+    try:
+        tune_kwargs['device'] = device
+        print('Tuning kwargs:', tune_kwargs)
+        m.tune(**tune_kwargs)
+    except TypeError:
+        # older/newer ultralytics may not accept device in tune(); retry without it
+        print('model.tune() did not accept `device` kwarg; retrying without device')
+        tune_kwargs.pop('device', None)
+        m.tune(**tune_kwargs)
+    except Exception as e:
+        print('Hyperparameter tuning failed:', e)
+        return None
+
+    print('Hyperparameter tuning finished. Check generated artifacts (if any).')
+    return True
+
 
 def check_device():
     if torch.cuda.is_available():
@@ -30,7 +143,7 @@ def check_device():
 
 
 def run_training_validation(device):
-    model = YOLO('yolov8n.pt')
+    model = YOLO('yolo11n.pt')
     print("Starting training...")
 
     # Recommended safe defaults to avoid DataLoader / memory issues on small machines:
@@ -38,7 +151,7 @@ def run_training_validation(device):
     workers = 2
 
     # two-stage training params
-    freeze_epochs = 10  # freeze backbone for these first epochs
+    freeze_epochs = 2  # freeze backbone for these first epochs
     total_epochs = 1000
     early_stop_patience = 3  # number of chunks with no improvement before stopping
     chunk_size = 5  # train in chunks after unfreezing to allow early stopping checks
@@ -49,11 +162,38 @@ def run_training_validation(device):
         except Exception:
             pass
 
+    train_common = {
+        'data': 'data.yaml',
+        'imgsz': 640,
+        'batch': batch_size,
+        'workers': workers,
+        'device': device,
+        'weight_decay': TRAINING_HYP.get('weight_decay', 0.0),
+    }
+
+    # Add augmentation flags if enabled in AUGMENTATION config
+    if AUGMENTATION.get('enable'):
+        train_common['augment'] = True
+        if 'translate' in AUGMENTATION:
+            train_common['translate'] = AUGMENTATION['translate']
+        if 'scale' in AUGMENTATION:
+            train_common['scale'] = AUGMENTATION['scale']
+        if 'shear' in AUGMENTATION:
+            train_common['shear'] = AUGMENTATION['shear']
+        if 'degrees' in AUGMENTATION:
+            train_common['degrees'] = AUGMENTATION['degrees']
+        if 'perspective' in AUGMENTATION:
+            train_common['perspective'] = AUGMENTATION['perspective']
+        if 'erasing' in AUGMENTATION:
+            train_common['erasing'] = AUGMENTATION['erasing']
+
+
     try:
         # First stage: freeze backbone then train for a few epochs
         print(f"Freezing backbone for {freeze_epochs} epochs (if supported) and training...")
         freeze_backbone(model)
-        model.train(data='data.yaml', epochs=freeze_epochs, imgsz=640, device=device, batch=batch_size, workers=workers)
+        # use train_common for consistent args and optional augmentation
+        model.train(epochs=freeze_epochs, **train_common)
 
         # Second stage: create a fresh model from the checkpoint produced by the frozen stage,
         # then unfreeze and continue training with early stopping checks. Recreating avoids
@@ -72,11 +212,15 @@ def run_training_validation(device):
                 ckpt = cand_best
         if ckpt is None:
             print("Warning: could not find checkpoint from freeze stage; continuing with original model instance.")
+            # apply dropout best-effort on original model before unfreezing
+            apply_dropout(model, TRAINING_HYP.get('dropout', 0.0))
             unfreeze_backbone(model)
             working_model = model
         else:
             print(f"Loading checkpoint for continued training: {ckpt}")
             working_model = YOLO(ckpt)
+            # try to apply dropout on the freshly loaded checkpoint model
+            apply_dropout(working_model, TRAINING_HYP.get('dropout', 0.0))
             unfreeze_backbone(working_model)
 
         remaining = total_epochs - freeze_epochs
@@ -98,20 +242,65 @@ def run_training_validation(device):
                     if os.path.exists(candidate_best):
                         rerun_ckpt = candidate_best
 
-            if rerun_ckpt is not None:
-                print(f"Launching subprocess training chunk from checkpoint: {rerun_ckpt}")
-                code = (
-                    f"from ultralytics import YOLO;"
-                    f"YOLO({repr(rerun_ckpt)}).train(data='data.yaml', epochs={epochs_to_run}, imgsz=640, device={repr(device)}, batch={batch_size}, workers={workers})"
-                )
-                try:
-                    subprocess.run([sys.executable, '-c', code], check=True)
-                except subprocess.CalledProcessError as e:
-                    print(f"Subprocess training chunk failed: {e}")
-                    raise
-            else:
-                # Fall back to in-process training if no checkpoint is available
-                working_model.train(data='data.yaml', epochs=epochs_to_run, imgsz=640, device=device, batch=batch_size, workers=workers)
+                if rerun_ckpt is not None:
+                    print(f"Launching subprocess training chunk from checkpoint: {rerun_ckpt}")
+                    aug_args = ''
+                    if AUGMENTATION.get('enable'):
+                        aug_args += f", augment={repr(True)}"
+                        if 'translate' in AUGMENTATION:
+                            aug_args += f", translate={repr(AUGMENTATION['translate'])}"
+                        if 'scale' in AUGMENTATION:
+                            aug_args += f", scale={repr(AUGMENTATION['scale'])}"
+                        if 'shear' in AUGMENTATION:
+                            aug_args += f", shear={repr(AUGMENTATION['shear'])}"
+                        if 'degrees' in AUGMENTATION:
+                            aug_args += f", degrees={repr(AUGMENTATION['degrees'])}"
+                        if 'perspective' in AUGMENTATION:
+                            aug_args += f", perspective={repr(AUGMENTATION['perspective'])}"
+                        if 'erasing' in AUGMENTATION:
+                            aug_args += f", erasing={repr(AUGMENTATION['erasing'])}"
+
+                    # add weight_decay to subprocess args
+                    aug_args += f", weight_decay={repr(TRAINING_HYP.get('weight_decay', 0.0))}"
+
+                    # If dropout is requested, attempt to set existing Dropout modules in the subprocess model instance.
+                    # We craft a compact one-line snippet that loads the checkpoint, sets dropout on any Dropout modules,
+                    # prints how many were changed, and then calls .train(). This uses a generator-setattr trick to avoid
+                    # multi-line for-loops in a -c single-line invocation.
+                    code_prefix = ""
+                    dropout_val = TRAINING_HYP.get('dropout', 0.0)
+                    if dropout_val and dropout_val > 0.0:
+                        # Note: this uses getattr(m, 'model') to access internal modules; it is best-effort.
+                        # It sets .p on any Dropout/Dropout2d/Dropout3d instances found.
+                        code_prefix = (
+                            "import torch;import torch.nn as nn;"
+                            f"m=YOLO({repr(rerun_ckpt)});mods=getattr(m,'model',None);"
+                            "changed=0;"
+                            "if mods is not None:"
+                            f" changed=sum(1 for mm in mods.modules() if isinstance(mm,(nn.Dropout,nn.Dropout2d,nn.Dropout3d)) and (setattr(mm,'p',{repr(dropout_val)}) or True));"
+                            "print('Dropout modules changed:',changed);"
+                        )
+
+
+                    # Build the final command: either a prefixed/dropout-applier then call train on the model instance
+                    if code_prefix:
+                        code = (
+                            f"from ultralytics import YOLO;{code_prefix}"
+                            f"m.train(data='data.yaml', epochs={epochs_to_run}, imgsz=640, device={repr(device)}, batch={batch_size}, workers={workers}{aug_args})"
+                        )
+                    else:
+                        code = (
+                            f"from ultralytics import YOLO;"
+                            f"YOLO({repr(rerun_ckpt)}).train(data='data.yaml', epochs={epochs_to_run}, imgsz=640, device={repr(device)}, batch={batch_size}, workers={workers}{aug_args})"
+                        )
+                    try:
+                        subprocess.run([sys.executable, '-c', code], check=True)
+                    except subprocess.CalledProcessError as e:
+                        print(f"Subprocess training chunk failed: {e}")
+                        raise
+                else:
+                    # Fall back to in-process training if no checkpoint is available
+                    working_model.train(epochs=epochs_to_run, **train_common)
 
             # after chunk, parse latest results.csv and check mAP50
             run_dir = latest_train_run_dir()

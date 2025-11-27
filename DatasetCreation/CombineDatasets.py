@@ -5,7 +5,8 @@ from pathlib import Path
 # Paths to your two datasets
 dataset1 = Path("../Strawberry_Flower_Dataset2")  # has train/, valid/, test/
 dataset2 = Path("../Strawberry_Flower_Dataset")   # has images/train,val + labels/train,val
-combined = Path("../Combined_Dataset")
+dataset3 = Path("../Strawberry_Flower_Dataset3")   # has train/, valid/, test/
+combined = Path("../Combined_Dataset2")
 
 # Create target folders
 for split in ["train", "val", "test"]:
@@ -38,6 +39,7 @@ def copy_data(img_dir, lbl_dir, split_name):
             print(f"⚠️ No label found for {img_path.name}")
 
 # --- Dataset 1 (train/valid/test) ---
+print("Copying Dataset 1...")
 for split in ["train", "valid", "test"]:
     img_dir = dataset1 / split / "images"
     lbl_dir = dataset1 / split / "labels"
@@ -46,10 +48,20 @@ for split in ["train", "valid", "test"]:
         copy_data(img_dir, lbl_dir, new_split_name)
 
 # --- Dataset 2 (images/labels subfolders) ---
+print("Copying Dataset 2...")
 for split in ["train", "val"]:
     img_dir = dataset2 / "images" / split
     lbl_dir = dataset2 / "labels" / split
     if img_dir.exists() and lbl_dir.exists():
         copy_data(img_dir, lbl_dir, split)
+
+# --- Dataset 3 (train/valid/test) ---
+print("Copying Dataset 3...")
+for split in ["train", "valid", "test"]:
+    img_dir = dataset3 / split / "images"
+    lbl_dir = dataset3 / split / "labels"
+    if img_dir.exists() and lbl_dir.exists():
+        new_split_name = "val" if split == "valid" else split
+        copy_data(img_dir, lbl_dir, new_split_name)
 
 print(f"✅ Combined dataset created at: {combined}")
