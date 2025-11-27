@@ -266,7 +266,7 @@ class Cameras:
         def __init__(self, stereo_parameters=None):
             self.stereo_parameters = stereo_parameters
 
-        def _compute_depth_map(self, left_image, right_image):
+        def _compute_depth_map(self, left_image, right_image, Cameras):
             """
             Compute depth map from stereo images.
             arguments: left_image -- left image of the stereo pair
@@ -274,9 +274,10 @@ class Cameras:
                        camera_parameters -- dictionary containing camera matrices and distortion coefficients
             returns: depth_map
             """
-            if len(self.cameras) < 2:
+            if len(Cameras().cameras) < 2:
                 raise ValueError("At least two cameras are required for depth estimation.")
-            
+        
+
             left_camera_matrix = Cameras().cameras[0].intrinsic_parameters
             right_camera_matrix = Cameras().cameras[1].intrinsic_parameters
 
@@ -472,8 +473,18 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"Image not found: {image_path}")
     detector = Cameras.detection(object_detection_parameters={'image_width': image.shape[1], 'image_height': image.shape[0]})
     circles = detector.detect_circel(image)
-    camera1 = Cameras.camera(camera_index=0, intrinsic_parameters=np.eye(3), image_width=image.shape[1], image_height=image.shape[0])
+    camera_upper = Cameras()
+    camera1 = camera_upper.camera(camera_index=0, intrinsic_parameters=np.eye(3), image_width=image.shape[1], image_height=image.shape[0])
+    camera2 = camera_upper.camera(camera_index=1, intrinsic_parameters=np.eye(3), image_width=image.shape[1], image_height=image.shape[0])
     print("Detected circles (in percentages):", circles)
     movements = detector.get_movement_distances(circles)
     print("Movement distances (in pixels):", movements)
     print("Image width:", image.shape[1], "Image height:", image.shape[0])
+    left_image = image
+    right_image = image
+    depth_estimator = Cameras.depth_estimation(stereo_parameters={'T': np.array([0.1, 0, 0])})
+    depth_map = depth_estimator._compute_depth_map(left_image, right_image, camera_upper)
+    print("Depth map shape:", depth_map.shape)
+    depth_at_center = depth_estimator.compute_depth_at_point(depth_map, image.shape[1]//2, image.shape[0]//2, )
+    print("Depth at image center:", depth_at_center)
+
