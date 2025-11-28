@@ -100,12 +100,12 @@ class Cameras:
 
 
     class camera:
-        def __init__(self, intrinsic_parameters=None, camera_index=None, image_width=None, image_height=None):
+        def __init__(self, intrinsic_parameters=None, camera_index=None, image_width=None, image_height=None, Camera_class=None):
             self.intrinsic_parameters = intrinsic_parameters
             self.camera_index = camera_index
             self.image_width = image_width
             self.image_height = image_height
-            Cameras().cameras.append(self)
+            Camera_class.cameras.append(self)
 
         def get_camera_indices(self, max_index=10):
             """
@@ -219,18 +219,6 @@ class Cameras:
             # Return the calibration results for all cameras
             return results
         
-        def compute_depth_at_point(self, depth_map, x, y):
-            """
-            Compute the depth at a specific point in the depth map.
-            arguments: depth_map -- computed depth map
-                       x -- x coordinate of the point
-                       y -- y coordinate of the point
-            returns: depth at the specified point
-            """
-            if x < 0 or x >= depth_map.shape[1] or y < 0 or y >= depth_map.shape[0]:
-                raise ValueError("Coordinates are out of bounds of the depth map.")
-            return depth_map[y, x]
-        
         def camera_info(self):
             """
             Returns information about the camera.
@@ -266,7 +254,7 @@ class Cameras:
         def __init__(self, stereo_parameters=None):
             self.stereo_parameters = stereo_parameters
 
-        def _compute_depth_map(self, left_image, right_image, Cameras):
+        def compute_depth_map(self, left_image, right_image, Cameras):
             """
             Compute depth map from stereo images.
             arguments: left_image -- left image of the stereo pair
@@ -274,12 +262,13 @@ class Cameras:
                        camera_parameters -- dictionary containing camera matrices and distortion coefficients
             returns: depth_map
             """
-            if len(Cameras().cameras) < 2:
+            print("Amount cameras: ",Cameras.cameras)
+            if len(Cameras.cameras) < 2:
                 raise ValueError("At least two cameras are required for depth estimation.")
         
 
-            left_camera_matrix = Cameras().cameras[0].intrinsic_parameters
-            right_camera_matrix = Cameras().cameras[1].intrinsic_parameters
+            left_camera_matrix = Cameras.cameras[0].intrinsic_parameters
+            right_camera_matrix = Cameras.cameras[1].intrinsic_parameters
 
             # Create StereoBM object
             stereo = cv2.StereoSGBM_create(numDisparities=16*5, blockSize=5)
@@ -297,15 +286,27 @@ class Cameras:
 
             return depth_map
 
-        def depth_map(self):
+        def shoot_and_depth_calc(self, Cameras):
             """shoots images from the first two cameras and computes the depth map."""
-            if len(self.cameras) < 2:
+            if len(Cameras.cameras) < 2:
                 raise ValueError("At least two cameras are required for depth estimation.")
 
-            left_image = Cameras().shoot_image(camera=self.cameras[0])
-            right_image = Cameras().shoot_image(camera=self.cameras[1])
+            left_image = Cameras().shoot_image(camera=Cameras.cameras[0])
+            right_image = Cameras().shoot_image(camera=Cameras.cameras[1])
 
-            return self._compute_depth_map(left_image, right_image)
+            return self.compute_depth_map(left_image, right_image, Cameras)
+            
+        def compute_depth_at_point(self, depth_map, x, y):
+            """
+            Compute the depth at a specific point in the depth map.
+            arguments: depth_map -- computed depth map
+                       x -- x coordinate of the point
+                       y -- y coordinate of the point
+            returns: depth at the specified point
+            """
+            if x < 0 or x >= depth_map.shape[1] or y < 0 or y >= depth_map.shape[0]:
+                raise ValueError("Coordinates are out of bounds of the depth map.")
+            return depth_map[y, x]
 
     class detection:
         def __init__(self, object_detection_parameters):
@@ -467,15 +468,15 @@ class Cameras:
 
 if __name__ == "__main__":
     # Load image and run circle detection without relying on camera objects
-    image_path = "/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/GeleCirkel.JPG"
+    image_path = r"C:\Users\Matth\School2025\Biomimicry\BiomimicryCode\GeleCirkel.JPG"
     image = cv2.imread(image_path)
     if image is None:
         raise FileNotFoundError(f"Image not found: {image_path}")
     detector = Cameras.detection(object_detection_parameters={'image_width': image.shape[1], 'image_height': image.shape[0]})
     circles = detector.detect_circel(image)
     camera_upper = Cameras()
-    camera1 = camera_upper.camera(camera_index=0, intrinsic_parameters=np.eye(3), image_width=image.shape[1], image_height=image.shape[0])
-    camera2 = camera_upper.camera(camera_index=1, intrinsic_parameters=np.eye(3), image_width=image.shape[1], image_height=image.shape[0])
+    camera1 = camera_upper.camera(camera_index=0, intrinsic_parameters=np.eye(3), image_width=image.shape[1], image_height=image.shape[0],Camera_class=camera_upper)
+    camera2 = camera_upper.camera(camera_index=1, intrinsic_parameters=np.eye(3), image_width=image.shape[1], image_height=image.shape[0],Camera_class=camera_upper)
     print("Detected circles (in percentages):", circles)
     movements = detector.get_movement_distances(circles)
     print("Movement distances (in pixels):", movements)
@@ -483,7 +484,7 @@ if __name__ == "__main__":
     left_image = image
     right_image = image
     depth_estimator = Cameras.depth_estimation(stereo_parameters={'T': np.array([0.1, 0, 0])})
-    depth_map = depth_estimator._compute_depth_map(left_image, right_image, camera_upper)
+    depth_map = depth_estimator.compute_depth_map(left_image, right_image, camera_upper)
     print("Depth map shape:", depth_map.shape)
     depth_at_center = depth_estimator.compute_depth_at_point(depth_map, image.shape[1]//2, image.shape[0]//2, )
     print("Depth at image center:", depth_at_center)
