@@ -24,6 +24,9 @@ import numpy as np
 import glob
 import os
 import torch
+import dotenv
+
+dotenv.load_dotenv()
 
 
 class Cameras:
@@ -468,7 +471,7 @@ class Cameras:
 
 if __name__ == "__main__":
     # Load image and run circle detection without relying on camera objects
-    image_path = r"C:\Users\Matth\School2025\Biomimicry\BiomimicryCode\GeleCirkel.JPG"
+    image_path = os.getenv("YELLOW_CIRCLE_PATH")
     image = cv2.imread(image_path)
     if image is None:
         raise FileNotFoundError(f"Image not found: {image_path}")
