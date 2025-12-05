@@ -4,14 +4,14 @@ This code consist of the code needed for the movement of the robot.
 """
 import time
 import board
-import numpy as np
+import math
 from adafruit_motor import stepper
 from adafruit_motorkit import MotorKit
 
 
-
+kit = MotorKit(i2c=board.I2C())
 Diameter_Wheel = 2.5 # in cm
-Circumference_Wheel = Diameter_Wheel * np.pi
+Circumference_Wheel = Diameter_Wheel * math.pi
 Steps_Per_Revolution = 200  # Steps per full revolution of the stepper motor 200 is the Nema 17 standard
 Steps_Per_Cm = Steps_Per_Revolution / Circumference_Wheel
 
@@ -29,16 +29,17 @@ def move_cm(distance_cm, speed=0.01, motor=kit.stepper1):
     for _ in range(steps):
         motor.onestep(direction=step_direction, style=stepper.SINGLE)
         time.sleep(speed)
-    motor.release()
+
 
 
 if __name__ == "__main__":
     kit = MotorKit(i2c=board.I2C())
     # Example usage: Move down 10 cm
-    move_cm(10, motor=kit.stepper1)
-    time.sleep(1)
+    # move_cm(10, motor=kit.stepper2)
+    # time.sleep(1)
     # Move up 10 cm
-    move_cm(-10, motor=kit.stepper1)
+    High = int(input("how should it move (up is negative): "))
+    move_cm(High, motor=kit.stepper1)
     time.sleep(1)
 
     
