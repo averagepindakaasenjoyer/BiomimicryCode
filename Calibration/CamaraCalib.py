@@ -16,17 +16,64 @@ Need to change following prameters for different setups:
 - max_iterations: The maximum number of iterations for corner refinement.
 - termination_eps: The desired accuracy for corner refinement. (this is between consecutive iterations shows convergences)
 """
-file_path = ['/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam0',
-             '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam1'] # Paths to calibration images for each camera
+# By default use the repository-level `CalibImg` folder which contains subfolders
+# like `8CM`, `12CM`, `16CM`. Each subfolder should contain files named
+# `camera_0...` and `camera_2...` for the two cameras.
+CALIB_IMG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'CalibImg'))
+CAMERA_PREFIXES = ['camera_0', 'camera_2']
+# Size of the aruco marker (same units used when printing / saving). Current code uses mm.
 size_of_marker = 26 # Size of the aruco marker in mm
-output_file = ['calibration_results_cam1.npz', 'calibration_results_cam2.npz'] # Output file names
+output_file = None  # will be generated per-camera below
 aruco_dict_type = cv2.aruco.DICT_4X4_50 # Aruco dictionary type
 max_iterations = 1000  # Max iterations for corner refinement
 termination_eps = 1e-9  # Desired accuracy for corner refinement
 
-# Create aruco dictionary and parameters
+# Create aruco dictionary and parameters (use compatibility helpers where available)
 aruco_dict = cv2.aruco.getPredefinedDictionary(aruco_dict_type)
-parameters = cv2.aruco.DetectorParameters()
+try:
+    # newer API
+    parameters = cv2.aruco.DetectorParameters_create()
+except Exception:
+    # fallback older name
+    try:
+        parameters = cv2.aruco.DetectorParameters()
+    except Exception:
+        parameters = None
+
+
+def detect_markers(gray_img, aruco_dict, parameters=None):
+    """Compatibility wrapper for ArUco marker detection.
+
+    Tries the classic `cv2.aruco.detectMarkers` first. If not available,
+    attempts to use `cv2.aruco.ArucoDetector(...).detectMarkers` (newer API).
+    Returns a tuple (corners, ids, rejectedImgPoints) similar to older API.
+    """
+    # Try classic function if present
+    try:
+        func = getattr(cv2.aruco, 'detectMarkers', None)
+        if callable(func):
+            return func(gray_img, aruco_dict, parameters=parameters)
+    except Exception:
+        pass
+
+    # Try ArucoDetector class (newer OpenCV versions)
+    try:
+        Detector = getattr(cv2.aruco, 'ArucoDetector', None)
+        if Detector is not None:
+            if parameters is not None:
+                detector = Detector(aruco_dict, parameters)
+            else:
+                detector = Detector(aruco_dict)
+            # detectMarkers may return (corners, ids, rejected)
+            res = detector.detectMarkers(gray_img)
+            # Depending on OpenCV version, detector.detectMarkers may return tuple
+            if isinstance(res, tuple) and len(res) >= 3:
+                return res[0], res[1], res[2]
+            return res
+    except Exception:
+        pass
+
+    raise RuntimeError("No compatible ArUco detection method available. Ensure opencv-contrib-python is installed.")
 # Define criteria for corner refinement
 criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, max_iterations, termination_eps)
 
@@ -58,15 +105,15 @@ def camera_calibration(images):
         print(f"Processing ({idx}/{len(images)}): {fname}")
         # Read the image and convert to grayscale
         img = cv2.imread(fname)
-        print(f"  Read image {fname}: {img.shape[1]}x{img.shape[0]} pixels")
         if img is None:
             print(f"  Warning: could not read image {fname}, skipping. Make sure the file exists and is an image.")
             continue
+        print(f"  Read image {fname}: {img.shape[1]}x{img.shape[0]} pixels")
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         print(f"  Converted the image to grayscale.")
 
         # Detect ArUco markers in the image
-        corners, ids, rejectedImgPoints = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+        corners, ids, rejectedImgPoints = detect_markers(gray, aruco_dict, parameters=parameters)
         print(f"  Detected markers: {ids.flatten() if ids is not None else []}")
 
         if ids is not None and len(ids) > 0:
@@ -117,13 +164,32 @@ def image_paths_from_folder(folder_path, extensions=None):
     return image_paths
 
 if __name__ == "__main__":
-    # This loop will calibrate all cameras based on the output_file list
-    for i in range(len(output_file)):
-        print(f"Calibrating camera {i+1}/{len(output_file)} using images from: {file_path[i]}")
-        images = image_paths_from_folder(file_path[i])
+    # Collect images for each camera from all subfolders under CALIB_IMG_ROOT
+    if not os.path.isdir(CALIB_IMG_ROOT):
+        raise SystemExit(f"Calib image root not found: {CALIB_IMG_ROOT}")
+
+    for cam_prefix in CAMERA_PREFIXES:
+        images = []
+        for sub in sorted(os.listdir(CALIB_IMG_ROOT)):
+            subp = os.path.join(CALIB_IMG_ROOT, sub)
+            if not os.path.isdir(subp):
+                continue
+            # match files starting with the camera prefix (e.g. camera_0...)
+            found = glob.glob(os.path.join(subp, f"{cam_prefix}*"))
+            found = sorted(found)
+            images.extend(found)
+
+        # deduplicate and sort
+        images = sorted(list(dict.fromkeys(images)))
+
+        if len(images) == 0:
+            print(f"No images found for {cam_prefix} in {CALIB_IMG_ROOT}; skipping.")
+            continue
+
+        print(f"Calibrating {cam_prefix}: found {len(images)} images (from {CALIB_IMG_ROOT})")
         camera_matrix, dist_coeffs = camera_calibration(images)
-        # Save the calibration results
-        np.savez(output_file[i], camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
-        print(f"Saved calibration results to {output_file[i]}\n")
+        out_name = f"calibration_results_{cam_prefix}.npz"
+        np.savez(out_name, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
+        print(f"Saved calibration results to {out_name}\n")
 
 

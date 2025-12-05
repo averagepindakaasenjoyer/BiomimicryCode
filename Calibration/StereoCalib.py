@@ -20,12 +20,13 @@ Need to change following prameters for different setups:
 - termination_eps: The desired accuracy for corner refinement. (this is between consecutive iterations shows convergences)
 
 """
-left_cam_file = 'calibration_results_cam1.npz'  # Left camera calibration results
-right_cam_file = 'calibration_results_cam2.npz'  # Right camera calibration results
-stereo_output_file = 'stereo_calibration_results.npz'  # Output file for
-# Stereo calibration results
-file_path = ['/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam0',
-             '/Users/thijnvanveen/Desktop/Biomimicrh/Code/BiomimicryCode/Tezt2/Cam1']
+left_cam_file = 'calibration_results_camera_0.npz'  # Left camera calibration results (produced by CamaraCalib)
+right_cam_file = 'calibration_results_camera_2.npz'  # Right camera calibration results (produced by CamaraCalib)
+stereo_output_file = 'stereo_calibration_results.npz'  # Output file for stereo calibration results
+# Use repository-level CalibImg folder by default
+CALIB_IMG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'CalibImg'))
+LEFT_PREFIX = 'camera_0'
+RIGHT_PREFIX = 'camera_2'
 size_of_marker = 26  # Marker side length in mm
 aruco_dict_type = cv2.aruco.DICT_4X4_50
 max_iterations = 1000  # Max iterations for corner refinement
@@ -58,7 +59,7 @@ def image_paths_from_folder(folder_path, extensions=None):
     image_paths = sorted(list(dict.fromkeys(image_paths)))
     return image_paths
 
-def stereo_vision_calibration(Left_camera_matrix, Left_dist_coeffs, Right_camera_matrix, Right_dist_coeffs, folder_path_left, folder_path_right):
+def stereo_vision_calibration(Left_camera_matrix, Left_dist_coeffs, Right_camera_matrix, Right_dist_coeffs, left_images, right_images):
     """
     Perform stereo calibration and rectification using two calibrated cameras.
     This assumes both cameras have been calibrated individually (intrinsics known)
@@ -73,10 +74,7 @@ def stereo_vision_calibration(Left_camera_matrix, Left_dist_coeffs, Right_camera
     returns: R, T, Q matrices from stereo calibration
     """
 
-    # Load image paths from both folders using the helper so multiple extensions are supported
-    left_images = image_paths_from_folder(folder_path_left)
-    right_images = image_paths_from_folder(folder_path_right)
-
+    # left_images and right_images should be lists of equal-length matched paths
     # Prepare ArUco detector
     objpoints = []  # 3D points in real world
     imgpoints_left = []
@@ -92,6 +90,9 @@ def stereo_vision_calibration(Left_camera_matrix, Left_dist_coeffs, Right_camera
     for left_path, right_path in zip(left_images, right_images):
         img_left = cv2.imread(left_path)
         img_right = cv2.imread(right_path)
+        if img_left is None or img_right is None:
+            # skip if either image failed to load
+            continue
         gray_left = cv2.cvtColor(img_left, cv2.COLOR_BGR2GRAY)
         gray_right = cv2.cvtColor(img_right, cv2.COLOR_BGR2GRAY)
 
@@ -141,7 +142,9 @@ def stereo_vision_calibration(Left_camera_matrix, Left_dist_coeffs, Right_camera
     return R, T, Q
 
 if __name__ == "__main__":
-    # Load individual camera calibration results
+    # Load individual camera calibration results produced by `CamaraCalib.py`.
+    if not os.path.exists(left_cam_file) or not os.path.exists(right_cam_file):
+        raise SystemExit(f"Expected per-camera calibration files not found: {left_cam_file}, {right_cam_file}")
     left_data = np.load(left_cam_file)
     right_data = np.load(right_cam_file)
 
@@ -150,11 +153,40 @@ if __name__ == "__main__":
     Right_camera_matrix = right_data['camera_matrix']
     Right_dist_coeffs = right_data['dist_coeffs']
 
-    print("Starting stereo calibration.")
+    # Build matched pairs across all subfolders in CALIB_IMG_ROOT by matching trailing indices
+    if not os.path.isdir(CALIB_IMG_ROOT):
+        raise SystemExit(f"Calib image root not found: {CALIB_IMG_ROOT}")
+
+    matched_left = []
+    matched_right = []
+    for sub in sorted(os.listdir(CALIB_IMG_ROOT)):
+        subp = os.path.join(CALIB_IMG_ROOT, sub)
+        if not os.path.isdir(subp):
+            continue
+        left_files = glob.glob(os.path.join(subp, f"{LEFT_PREFIX}*"))
+        right_files = glob.glob(os.path.join(subp, f"{RIGHT_PREFIX}*"))
+        # map by trailing index after last underscore e.g. camera_0.jpg_3 -> '3'
+        def make_map(fl):
+            m = {}
+            for p in fl:
+                key = os.path.basename(p).rsplit('_', 1)[-1]
+                m[key] = p
+            return m
+
+        lm = make_map(left_files)
+        rm = make_map(right_files)
+        for k in sorted(set(lm.keys()) & set(rm.keys()), key=lambda x: int(x) if x.isdigit() else x):
+            matched_left.append(lm[k])
+            matched_right.append(rm[k])
+
+    if len(matched_left) == 0:
+        raise SystemExit(f"No matched stereo image pairs found under {CALIB_IMG_ROOT}")
+
+    print(f"Starting stereo calibration using {len(matched_left)} matched pairs from {CALIB_IMG_ROOT}.")
     R, T, Q = stereo_vision_calibration(
         Left_camera_matrix, Left_dist_coeffs,
         Right_camera_matrix, Right_dist_coeffs,
-        file_path[0], file_path[1]
+        matched_left, matched_right
     )
 
     # Save stereo calibration results
