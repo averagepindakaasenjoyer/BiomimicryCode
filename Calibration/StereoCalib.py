@@ -51,6 +51,12 @@ size_of_marker_mm = 26
 
 # ArUco dictionary
 aruco_dict_type = cv2.aruco.DICT_4X4_50
+<<<<<<< HEAD
+=======
+max_iterations = 100  # Max iterations for corner refinement
+termination_eps = 1e-4  # Desired accuracy for corner refinement
+# Create aruco dictionary and parameters
+>>>>>>> ab7a01b9e2a8757e2d59232a3adf12b26d9b1d18
 aruco_dict = cv2.aruco.getPredefinedDictionary(aruco_dict_type)
 
 # Detector parameters (compatibility across OpenCV versions)

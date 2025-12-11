@@ -1,6 +1,6 @@
-train: ../Combined_Dataset/images/train
-val: ../Combined_Dataset/images/val
-test: ../Combined_Dataset/images/test
-
-nc: 2
-names: ['flower', 'flower-bud']
+train: ../Combined_Dataset2/images/train
+val: ../Combined_Dataset2/images/val
+test: ../Combined_Dataset2/images/test
+nc: 1
+names:
+- flower
