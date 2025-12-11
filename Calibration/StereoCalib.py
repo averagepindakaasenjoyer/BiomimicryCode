@@ -29,8 +29,8 @@ LEFT_PREFIX = 'camera_0'
 RIGHT_PREFIX = 'camera_2'
 size_of_marker = 26  # Marker side length in mm
 aruco_dict_type = cv2.aruco.DICT_4X4_50
-max_iterations = 1000  # Max iterations for corner refinement
-termination_eps = 1e-9  # Desired accuracy for corner refinement
+max_iterations = 100  # Max iterations for corner refinement
+termination_eps = 1e-4  # Desired accuracy for corner refinement
 # Create aruco dictionary and parameters
 aruco_dict = cv2.aruco.getPredefinedDictionary(aruco_dict_type)
 parameters = cv2.aruco.DetectorParameters()
