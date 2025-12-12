@@ -1,12 +1,13 @@
-#!/usr/bin/env python3
 """
 Batch stereo calibration script (Windows-safe, no multiprocessing).
 
-Multiprocessing timeout wrappers caused "Can't get local object"
-and WinError 6 / WinError 5 due to Python's handle duplication.
-This version removes all multiprocessing and runs cleanly on Windows.
+The file assumes that individual camera intrinsics have already been
+calibrated and saved in 'camera_0_cam.npz' and 'camera_2_cam.npz'.
+It processes image pairs from subfolders under 'CalibImg' and looks for
+images starting with 'camera_0' and 'camera_2' respectively.
+Saves stereo calibration results in separate .npz files per subfolder.
 
-Otherwise identical to your logic.
+This script can take a few hours to run depending on the number of image pairs.
 """
 
 import os
@@ -17,9 +18,7 @@ import cv2
 from tqdm import tqdm
 
 
-# ==============================
 # USER CONFIG
-# ==============================
 left_cam_file = 'camera_0_cam.npz'
 right_cam_file = 'camera_2_cam.npz'
 
@@ -34,9 +33,7 @@ size_of_marker_mm = 26
 aruco_dict_type = cv2.aruco.DICT_4X4_50
 
 
-# ==============================
-# ARUCO SETUP
-# ==============================
+# ARUCO SETUP, sometimes version-dependent
 aruco_dict = cv2.aruco.getPredefinedDictionary(aruco_dict_type)
 try:
     parameters = cv2.aruco.DetectorParameters()
@@ -46,9 +43,7 @@ except Exception:
 criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 1, 1e-4)
 
 
-# ==============================
 # ARUCO DETECTION WRAPPER
-# ==============================
 def detect_markers(gray, dictionary, parameters):
     """Version-agnostic ArUco detection."""
     # Older OpenCV API
@@ -58,8 +53,6 @@ def detect_markers(gray, dictionary, parameters):
             return func(gray, dictionary, parameters=parameters)
     except:
         pass
-
-    # Newer OpenCV API
     try:
         Detector = getattr(cv2.aruco, 'ArucoDetector', None)
         if Detector:
@@ -71,9 +64,7 @@ def detect_markers(gray, dictionary, parameters):
     raise RuntimeError("No ArUco detection method available.")
 
 
-# ==============================
 # STEREO CALIBRATION
-# ==============================
 def stereo_vision_calibration(
         Left_camera_matrix, Left_dist_coeffs,
         Right_camera_matrix, Right_dist_coeffs,
@@ -146,7 +137,7 @@ def stereo_vision_calibration(
 
     image_size = last_image_size
 
-    # Stereo calibration (no timeout)
+    # Stereo calibration (no timeout) because it can take a while
     retval, CM1, DC1, CM2, DC2, R, T, E, F = cv2.stereoCalibrate(
         objpoints,
         imgpoints_left,
@@ -173,10 +164,6 @@ def stereo_vision_calibration(
         reprojection_error=float(retval)
     )
 
-
-# ==============================
-# MAIN
-# ==============================
 if __name__ == "__main__":
     if not os.path.exists(left_cam_file) or not os.path.exists(right_cam_file):
         print("Missing left or right camera intrinsics.")
