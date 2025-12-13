@@ -24,7 +24,11 @@ right_cam_file = 'camera_2_cam.npz'
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 CALIB_IMG_ROOT = os.path.join(ROOT_DIR, 'CalibImg')
-SUBFOLDERS = ['8CM', '12CM', '16CM']
+SUBFOLDERS = [
+    #'8CM',
+    #'12CM',
+    '16CM'
+    ]
 
 LEFT_PREFIX = 'camera_0'
 RIGHT_PREFIX = 'camera_2'
