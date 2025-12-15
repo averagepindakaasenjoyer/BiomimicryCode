@@ -157,10 +157,16 @@ def compute_depth_map(left_image, right_image, camera_parameters, stereo_paramet
     depth_map = np.zeros_like(disparity_map)
     valid_mask = disparity_map > 0  # Only positive disparities yield valid depth
     
-    with np.errstate(divide='ignore', invalid='ignore'):
-        # Q[2,3] encodes -f*baseline, so division gives depth directly
-        depth_map[valid_mask] = Q[2, 3] / disparity_map[valid_mask]
-    
+    # with np.errstate(divide='ignore', invalid='ignore'):
+    #     # Q[2,3] encodes -f*baseline, so division gives depth directly
+    #     depth_map[valid_mask] = Q[2, 3] / disparity_map[valid_mask]
+    # after you have disparity_map (in pixels, i.e. after /16)
+    points_3d = cv2.reprojectImageTo3D(disparity_map, Q)   # returns X,Y,Z in units of T (units of baseline)
+    depth_map = points_3d[:, :, 2]                         # Z channel
+
+    # mask invalid disparities
+    invalid_mask = (disparity_map <= 0) | ~np.isfinite(depth_map)
+    depth_map[invalid_mask] = 0.0
     # Ensure positive depths (take absolute value)
     depth_map = np.abs(depth_map)
     
