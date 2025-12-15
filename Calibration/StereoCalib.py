@@ -16,11 +16,14 @@ import sys
 import numpy as np
 import cv2
 from tqdm import tqdm
+import dotenv
+
+dotenv.load_dotenv()
 
 
 # USER CONFIG
-left_cam_file = 'camera_0_cam.npz'
-right_cam_file = 'camera_2_cam.npz'
+left_cam_file = os.getenv('LEFT_CAM_PARAMS')
+right_cam_file = os.getenv('RIGHT_CAM_PARAMS')
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 CALIB_IMG_ROOT = os.path.join(ROOT_DIR, 'CalibImg')
@@ -35,6 +38,7 @@ RIGHT_PREFIX = 'camera_2'
 
 size_of_marker_mm = 26
 aruco_dict_type = cv2.aruco.DICT_4X4_50
+debugging = False
 
 
 # ARUCO SETUP, sometimes version-dependent
@@ -72,11 +76,15 @@ def detect_markers(gray, dictionary, parameters):
 def stereo_vision_calibration(
         Left_camera_matrix, Left_dist_coeffs,
         Right_camera_matrix, Right_dist_coeffs,
-        left_images, right_images, marker_size_m):
+        left_images, right_images, marker_size_m, debugging=False):
 
     objpoints = []
     imgpoints_left = []
     imgpoints_right = []
+    
+    # Track which image each marker set belongs to
+    imgpoints_left_per_image = []
+    imgpoints_right_per_image = []
 
     # A 4-corner square as object points
     objp = np.array([
@@ -118,6 +126,10 @@ def stereo_vision_calibration(
 
         cL = [np.array(c).reshape(-1,2) for c in cornersL]
         cR = [np.array(c).reshape(-1,2) for c in cornersR]
+        
+        # Store points for this specific image
+        current_left_points = []
+        current_right_points = []
 
         for mid in common:
             iL = np.where(idsL == mid)[0][0]
@@ -135,9 +147,36 @@ def stereo_vision_calibration(
             imgpoints_left.append(pL.reshape(-1,2))
             imgpoints_right.append(pR.reshape(-1,2))
             objpoints.append(objp)
+            
+            # Store for visualization
+            current_left_points.append(pL.reshape(-1,2))
+            current_right_points.append(pR.reshape(-1,2))
+        
+        # Save the points grouped by image
+        if current_left_points:
+            imgpoints_left_per_image.append((left_path, current_left_points))
+            imgpoints_right_per_image.append((right_path, current_right_points))
 
     if len(objpoints) == 0:
         raise ValueError("No usable marker correspondences found.")
+    
+    if debugging: 
+        for left_path, points_list in imgpoints_left_per_image:
+            imgL = cv2.imread(left_path)
+            for points in points_list:
+                for p in points:
+                    cv2.circle(imgL, tuple(p.astype(int)), 5, (0, 255, 0), -1)
+            cv2.imshow(f"L - {os.path.basename(left_path)}", imgL)
+        
+        for right_path, points_list in imgpoints_right_per_image:
+            imgR = cv2.imread(right_path)
+            for points in points_list:
+                for p in points:
+                    cv2.circle(imgR, tuple(p.astype(int)), 5, (0, 255, 0), -1)
+            cv2.imshow(f"R - {os.path.basename(right_path)}", imgR)
+        
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
     image_size = last_image_size
 
@@ -220,7 +259,7 @@ if __name__ == "__main__":
         try:
             results = stereo_vision_calibration(
                 LCM, LDC, RCM, RDC,
-                left_list, right_list, marker_size_m
+                left_list, right_list, marker_size_m, debugging=debugging
             )
         except Exception as e:
             print(f"❌ Error in {sub}: {e}")

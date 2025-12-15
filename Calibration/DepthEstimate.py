@@ -50,7 +50,7 @@ Img_Couples = {
             }
 
 SELECTED_IMG_COUPLE = '5'  # Change this index to select different image pairs
-SELECTED_FOLDER_INDEX = 2  # 0 for 8CM, 1 for 12CM, 2 for 16CM
+SELECTED_FOLDER_INDEX = 0  # 0 for 8CM, 1 for 12CM, 2 for 16CM
 num_disparities = 16 * 5  # Must be divisible by 16
 block_size = 15  # Must be odd and >=1
 
@@ -113,6 +113,9 @@ def compute_depth_map(left_image, right_image, camera_parameters, stereo_paramet
     print("rotation matrix R2:\n", R2)
     print("projection matrix P2:\n", P2)
     print("disparity-to-depth mapping matrix Q:\n", Q)
+    T[0,0] = -16
+    print(f"Stereo baseline (T): {T}")
+
     
     image_size = left_image.shape[::-1]  # (width, height)
     
@@ -208,7 +211,7 @@ if __name__ == "__main__":
 
     # Display depth map
     print('Depth map computed. Displaying result in a window.')
-    print("distance to center pixel (in mm): ", depth_map[depth_map.shape[0]//2, depth_map.shape[1]//2])
+    print("distance to center pixel (in meters): ", depth_map[depth_map.shape[0]//2, depth_map.shape[1]//2])
     depth_map_display = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     if show_depth_map:
         cv2.imshow('Depth Map', depth_map_display)

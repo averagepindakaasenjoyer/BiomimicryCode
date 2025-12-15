@@ -24,9 +24,9 @@ num_disparities = 16 * 5  # Must be divisible by 16
 block_size = 15  # Must be odd and >=1
 camera_parameters_path_left = os.getenv("LEFT_CAM_PARAMS")
 camera_parameters_path_right = os.getenv("RIGHT_CAM_PARAMS")
-stereo_parameters_path = os.getenv("STEREO_PARAMS")
+stereo_parameters_path = os.getenv("STEREO_PARAMS_16CM")
 target_location = os.getenv("TARGET_LOCATION_DEPTHMAPS")  # Directory to save depth maps
-show_depth_map = False  # Flag to display depth map
+show_depth_map = True  # Flag to display depth map
 pixel_to_determine = (320, 240)  # Pixel coordinates to determine depth (x, y)
 
 def live_camera_data(camera_index_left, camera_index_right):
