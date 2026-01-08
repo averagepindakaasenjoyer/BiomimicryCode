@@ -16,21 +16,32 @@ Circumference_Wheel = Diameter_Wheel * np.pi
 Steps_Per_Revolution = 200  # Steps per full revolution of the stepper motor
 Steps_Per_Cm = Steps_Per_Revolution / Circumference_Wheel
 
-# def move_cm(distance_cm, speed=0.01, motor=kit.stepper1):
-#     """
-#     Move the robot forward or backward a certain distance in centimeters.
-    
-#     :param distance_cm: Distance to move in centimeters. Positive for forward, negative for backward.
-#     :param speed: Delay between steps to control speed. Lower is faster.
-#     """
-#     steps = int(distance_cm * Steps_Per_Cm)
-#     step_direction = stepper.FORWARD if steps > 0 else stepper.BACKWARD
-#     steps = abs(steps)
+kit1 = MotorKit(i2c = board.I2C(), address=0x60)
+kit2 = MotorKit(i2c = board.I2C(), address=0x61)
 
-#     for _ in range(steps):
-#         motor.onestep(direction=step_direction, style=stepper.SINGLE)
-#         time.sleep(speed)
-#     motor.release()
+rails = [(kit1.stepper1, 'f'), (kit2.stepper2, 'b')]
+
+
+def move_cm(distance_cm, speed=0.01, motor=[kit1.stepper1]):
+    """
+    Move the robot forward or backward a certain distance in centimeters.
+    
+    :param distance_cm: Distance to move in centimeters. Positive for forward, negative for backward.
+    :param speed: Delay between steps to control speed. Lower is faster.
+    """
+    steps = int(distance_cm * Steps_Per_Cm)
+    step_direction = stepper.FORWARD if steps > 0 else stepper.BACKWARD
+    steps = abs(steps)
+
+    for _ in range(steps):
+        for i in range(len(motor)):
+            if motor[i][1] == 'f':
+                motor[i][0].onestep(direction=step_direction, style=stepper.SINGLE)
+            else:
+                motor[i][0].onestep(direction=-step_direction, style=stepper.SINGLE)
+        time.sleep(speed)
+    for i in range(len(motor)):
+        motor[i][0].release()
 
 def detect_circle(image):
             """
@@ -87,9 +98,6 @@ def detect_circle(image):
                 y = int(y_perc * Y_shape)
                 cv2.circle(image, (x, y), 5, (0, 255, 0), -1)  # center
                 cv2.circle(image, (x, y), 10, (255, 0, 0), 2)  # radius
-            cv2.imshow("Detected Circles", image)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
             return precentage_circles
 
 
@@ -108,7 +116,7 @@ def process_image():
     
     if not ret:
         print("Failed to capture image")
-        return
+        return (0, 0)
     circles = detect_circle(image)
     image_height, image_width = image.shape[:2]
     if circles:
@@ -123,13 +131,20 @@ def process_image():
         move_distanceX = circle_x_pixel - center_x
         move_distanceY = circle_y_pixel - center_y
         return move_distanceX, move_distanceY
-    return 0, 0
+    return (0, 0)
         
         
 if __name__ == "__main__":
     # Capture an image and process it
-    (move_distanceX, move_distanceY) = process_image()
-    print(f"Move distances - X: {move_distanceX}, Y: {move_distanceY}")
+    while True:  
+        (move_distanceX, move_distanceY) = process_image()
+        print(f"Move distances - X: {move_distanceX}, Y: {move_distanceY}")
+        # Move robot based on processed image
+        if move_distanceY > 20:  # Move forward if circle is below center
+            move_cm(5, motor=rails)  # Move forward 5 cm
+        elif move_distanceY < -20:  # Move backward if circle is above center
+            move_cm(-5, motor=rails)  # Move backward 5 cm
+        time.sleep(2)  # Wait before capturing the next image
 
 
 
