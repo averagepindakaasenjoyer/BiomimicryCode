@@ -1,6 +1,9 @@
 """
-This code consist of the code needed for the movement of the robot.
-    It uses stepper motors to move the robot forward, backward, and to turn.
+This file creates a function for the stepper motors to move the robot forward, backward, left or right.
+When moving forward or backward, both main motors move opposite directions 
+to create movement in the same direction, since the rails are oriented oppositely.
+Input tuple is in the form of (direction, distance in cm).
+Possible directions are "front", "rear", "left", "right", "up", and "down".
 """
 import time
 import board
@@ -12,6 +15,7 @@ kit1 = MotorKit(i2c=board.I2C(address=0x60))
 kit2 = MotorKit(i2c=board.I2C(address=0x61))
 kit3 = MotorKit(i2c=board.I2C(address=0x62))
 
+# Adjust motor based on position on robot, not direction it moves
 motor_dict = {
     "rear_main": kit1.stepper1,
     "front_main": kit1.stepper2,
@@ -19,9 +23,9 @@ motor_dict = {
     "left_rail": kit2.stepper2,
     "arm": kit3.stepper1,
 }
-
+# dictionary to map direction to motors and their movement direction
 direction_dict = {
-    "front": [("rear_main", -1), ("front_main", 1)],
+    "front": [("front_main", 1), ("rear_main", -1)],
     "rear": [("rear_main", 1), ("front_main", -1)],
     "left": [("left_rail", 1), ("right_rail", -1)],
     "right": [("right_rail", 1), ("left_rail", -1)],
@@ -32,7 +36,7 @@ direction_dict = {
 
 diameter_wheel = 2.5 # in cm
 circumference_wheel = diameter_wheel * np.pi
-steps_per_revolution = 200  # Steps per full revolution of the stepper motor 200 is the Nema 17 standard
+steps_per_revolution = 200  # Steps per full revolution of the stepper motor 200 is the standard for Nema 17
 steps_per_cm = steps_per_revolution / circumference_wheel
 
 def move_cm(distance_cm, speed=0.01, motor=[kit1.stepper1]):
