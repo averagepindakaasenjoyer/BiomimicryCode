@@ -69,7 +69,7 @@ def move_direction(speed=0.01, direction_to_move=[("front", 10)]):
         for motor_name, dir_multiplier in motors_to_move:
             motor = motor_dict[motor_name]
             step_direction = stepper.FORWARD if dir_multiplier > 0 else stepper.BACKWARD
-            motor.onestep(direction=step_direction, style=stepper.DOUBLE)
+            motor.onestep(direction=step_direction, style=stepper.SINGLE)
         time.sleep(speed)
     for motor_name, _ in motors_to_move:
         if motor_name != "arm":
@@ -83,13 +83,6 @@ def release_all_motors():
         motor.release()
 
 if __name__ == "__main__":
-    print("Moving left ")
-    move_direction(speed=0.01, direction_to_move=[("left", 100)])
-    time.sleep(1)
-    print("Moving right ")
-    move_direction(speed=0.01, direction_to_move=[("right", 100)])
-    time.sleep(1)
-    print("releasing all motors")
     release_all_motors()
 
         
