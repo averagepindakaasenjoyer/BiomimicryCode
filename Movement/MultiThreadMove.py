@@ -1,10 +1,4 @@
-"""
-This file creates a function for the stepper motors to move the robot forward, backward, left or right.
-When moving forward or backward, both main motors move opposite directions 
-to create movement in the same direction, since the rails are oriented oppositely.
-Input tuple is in the form of (direction, distance in cm).
-Possible directions are "front", "rear", "left", "right", "up", and "down".
-"""
+import threading
 import time
 import board
 import numpy as np
@@ -13,9 +7,8 @@ from adafruit_motorkit import MotorKit
 
 kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
-# kit3 = MotorKit(i2c=board.I2C(), address=0x62)
 
-# Adjust motor based on position on robot, not direction it moves
+
 motor_dict = {
     "rear_main": kit1.stepper1,
     "front_main": kit1.stepper2,
@@ -23,9 +16,9 @@ motor_dict = {
     "left_rail": kit2.stepper2,
     # "arm": kit3.stepper1,
 }
-# dictionary to map direction to motors and their movement direction
+
 direction_dict = {
-    "front": [("front_main", 1), ("rear_main", -1)],
+    "front": [("rear_main", -1), ("front_main", 1)],
     "rear": [("rear_main", 1), ("front_main", -1)],
     "left": [("left_rail", 1), ("right_rail", -1)],
     "right": [("right_rail", 1), ("left_rail", -1)],
@@ -33,11 +26,12 @@ direction_dict = {
     "down": [("arm", -1)],
 }
 
-
 diameter_wheel = 2.5 # in cm
 circumference_wheel = diameter_wheel * np.pi
-steps_per_revolution = 200  # Steps per full revolution of the stepper motor 200 is the standard for Nema 17
+steps_per_revolution = 200  # Steps per full revolution of the stepper motor 200 is the Nema 17 standard
 steps_per_cm = steps_per_revolution / circumference_wheel
+
+
 
 def move_cm(distance_cm, speed=0.01, motor=[kit1.stepper1]):
     """
@@ -78,7 +72,26 @@ def move_direction(speed=0.01, direction_to_move=[("front", 10)]):
     for motor_name, _ in motors_to_move:
         if motor_name != "arm":
             motor_dict[motor_name].release()
-            
+
+def move_cm(distance_cm, speed=0.03, motor=[kit1.stepper1], hold=True):
+    """
+    Move the robot forward or backward a certain distance in centimeters.
+    
+    :param distance_cm: Distance to move in centimeters. Positive for forward, negative for backward.
+    :param speed: Delay between steps to control speed. Lower is faster.
+    """
+    steps = int(distance_cm * steps_per_cm)
+    step_direction = stepper.FORWARD if steps > 0 else stepper.BACKWARD
+    steps = abs(steps)
+
+    for _ in range(steps):
+        for i in range(len(motor)):
+            motor[i].onestep(direction=step_direction, style=stepper.DOUBLE)
+        time.sleep(speed)
+    if not hold:
+        for i in motor:
+            i.release()
+
 def release_all_motors():
     """
     Release all motors to stop holding their position.
@@ -87,15 +100,24 @@ def release_all_motors():
         motor.release()
 
 if __name__ == "__main__":
-    print("Moving left ")
-    move_direction(speed=0.01, direction_to_move=[("left", 100)])
-    time.sleep(1)
-    print("Moving right ")
-    move_direction(speed=0.01, direction_to_move=[("right", 100)])
-    time.sleep(1)
-    print("releasing all motors")
+    # Example usage: Move forward 20 cm and right 10 cm simultaneously
+    
+    thread1 = threading.Thread(target=move_cm, args=(10, 0.01, [kit2.stepper1], False))
+    thread2 = threading.Thread(target=move_cm, args=(10, 0.01, [kit2.stepper2], False))
+
+    thread1.start()
+    thread2.start()
+
+    thread1.join()
+    thread2.join()
+
+    thread1 = threading.Thread(target=move_cm, args=(-10, 0.01, [kit2.stepper1], False))
+    thread2 = threading.Thread(target=move_cm, args=(-10, 0.01, [kit2.stepper2], False))
+
+    thread1.start()
+    thread2.start()
+
+    thread1.join()
+    thread2.join()
+
     release_all_motors()
-
-        
-
-
