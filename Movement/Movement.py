@@ -8,16 +8,16 @@ import numpy as np
 from adafruit_motor import stepper
 from adafruit_motorkit import MotorKit
 
-kit1 = MotorKit(i2c=board.I2C(address=0x60))
-kit2 = MotorKit(i2c=board.I2C(address=0x61))
-kit3 = MotorKit(i2c=board.I2C(address=0x62))
+kit1 = MotorKit(i2c=board.I2C(), address=0x60)
+kit2 = MotorKit(i2c=board.I2C(), address=0x61)
+# kit3 = MotorKit(i2c=board.I2C(), address=0x62)
 
 motor_dict = {
     "rear_main": kit1.stepper1,
     "front_main": kit1.stepper2,
     "right_rail": kit2.stepper1,
     "left_rail": kit2.stepper2,
-    "arm": kit3.stepper1,
+    # "arm": kit3.stepper1,
 }
 
 direction_dict = {
@@ -65,7 +65,7 @@ def move_direction(speed=0.01, direction_to_move=[("front", 10)]):
         motors_to_move.extend([motor_name for motor_name in direction_dict.get(direction, [])])
         steps_per_direction[direction] = (distance_cm * steps_per_cm)
 
-    for _step in range(max(abs(steps) for steps in steps_per_direction.values())):
+    for _step in range(int(max(abs(steps) for steps in steps_per_direction.values()))):
         for motor_name, dir_multiplier in motors_to_move:
             motor = motor_dict[motor_name]
             step_direction = stepper.FORWARD if dir_multiplier > 0 else stepper.BACKWARD
@@ -83,9 +83,9 @@ if __name__ == "__main__":
     move_cm(-10, motor=kit1.stepper1)
     time.sleep(1)
 
-    move_direction(speed=0.01, direction_to_move=[("front", 10), ("left", 5)])
+    move_direction(speed=0.01, direction_to_move=[("left", 100)])
     time.sleep(1)
-    move_direction(speed=0.01, direction_to_move=[("rear", 10), ("right", 5)])
+    move_direction(speed=0.01, direction_to_move=[("right", 100)])
     time.sleep(1)
 
     
