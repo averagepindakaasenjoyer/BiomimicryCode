@@ -43,23 +43,24 @@ circumference_wheel = diameter_wheel * np.pi
 steps_per_revolution = 200  # Steps per full revolution of the stepper motor 200 is the Nema 17 standard
 steps_per_cm = steps_per_revolution / circumference_wheel
 
-def move_cm(distance_cm, speed=0.01, motor=[kit1.stepper1]):
+speed = 0.01 # time delay between steps
+
+def move_cm(distance_cm, speed=speed, motor=[kit1.stepper1]):
     """
     Move the robot forward or backward a certain distance in centimeters.
     
     :param distance_cm: Distance to move in centimeters. Positive for forward, negative for backward.
     :param speed: Delay between steps to control speed. Lower is faster.
     """
-    steps = int(distance_cm * steps_per_cm)
-    step_direction = stepper.FORWARD if steps > 0 else stepper.BACKWARD
-    steps = abs(steps)
-
+    steps = int(abs(distance_cm * steps_per_cm))
+    step_direction = stepper.FORWARD if distance_cm > 0 else stepper.BACKWARD
+    
     for _ in range(steps):
         motor.onestep(direction=step_direction, style=stepper.SINGLE)
         time.sleep(speed)
     motor.release()
 
-def move_direction(speed=0.01, direction_to_move=[("front", 10)]):
+def move_direction(speed=speed, direction_to_move=[("front", 10)]):
     """
     Move a list of motors forward or backward a certain distance in centimeters.
     
@@ -71,7 +72,7 @@ def move_direction(speed=0.01, direction_to_move=[("front", 10)]):
 
     for direction, distance_cm in direction_to_move:
         motors_to_move.extend([motor_name for motor_name in direction_dict.get(direction, [])])
-        steps_per_direction[direction] = (distance_cm * steps_per_cm)
+        steps_per_direction[direction] = int(distance_cm * steps_per_cm)
 
     for _step in range(int(max(abs(steps) for steps in steps_per_direction.values()))):
         for motor_name, dir_multiplier in motors_to_move:
@@ -216,19 +217,19 @@ if __name__ == "__main__":
         # move in threads for each motor in main movement and rail movement
         threads = []
         if "front" in moving_dict:
-            t1 = threading.Thread(target=move_direction, args=(0.01, [("front", moving_dict["front"][0][1])]))
+            t1 = threading.Thread(target=move_direction, args=(speed, [("front", moving_dict["front"][0][1])]))
             threads.append(t1)
             t1.start()
         if "rear" in moving_dict:
-            t2 = threading.Thread(target=move_direction, args=(0.01, [("rear", moving_dict["rear"][0][1])]))
+            t2 = threading.Thread(target=move_direction, args=(speed, [("rear", moving_dict["rear"][0][1])]))
             threads.append(t2)
             t2.start()
         if "left" in moving_dict:
-            t3 = threading.Thread(target=move_direction, args=(0.01, [("left", moving_dict["left"][0][1])]))
+            t3 = threading.Thread(target=move_direction, args=(speed, [("left", moving_dict["left"][0][1])]))
             threads.append(t3)
             t3.start()
         if "right" in moving_dict:
-            t4 = threading.Thread(target=move_direction, args=(0.01, [("right", moving_dict["right"][0][1])]))
+            t4 = threading.Thread(target=move_direction, args=(speed, [("right", moving_dict["right"][0][1])]))
             threads.append(t4)
             t4.start()
 
