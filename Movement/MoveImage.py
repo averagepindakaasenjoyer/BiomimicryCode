@@ -13,6 +13,10 @@ import numpy as np
 from adafruit_motor import stepper
 from adafruit_motorkit import MotorKit
 import cv2
+import threading
+
+
+
 kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
 kit3 = MotorKit(i2c=board.I2C(), address=0x62)
@@ -69,11 +73,11 @@ def move_direction(speed=0.01, direction_to_move=[("front", 10)]):
         motors_to_move.extend([motor_name for motor_name in direction_dict.get(direction, [])])
         steps_per_direction[direction] = (distance_cm * steps_per_cm)
 
-    for _step in range(max(abs(steps) for steps in steps_per_direction.values())):
+    for _step in range(int(max(abs(steps) for steps in steps_per_direction.values()))):
         for motor_name, dir_multiplier in motors_to_move:
             motor = motor_dict[motor_name]
             step_direction = stepper.FORWARD if dir_multiplier > 0 else stepper.BACKWARD
-            motor.onestep(direction=step_direction, style=stepper.SINGLE)
+            motor.onestep(direction=step_direction, style=stepper.DOUBLE)
         time.sleep(speed)
     for motor_name, _ in motors_to_move:
         if motor_name != "arm":
@@ -159,7 +163,7 @@ def process_image():
     if circles:
         # only first circle is considered
         circle_x, circle_y = circles[0]
-        # Convert percentages back to pixel coordinates
+        # Convert percentages back to pixel coordinates migth be useful for debugging
         circle_x_pixel = int(circle_x * image_width)
         circle_y_pixel = int(circle_y * image_height)
         # Determine movement based on circle position
@@ -170,18 +174,66 @@ def process_image():
         return move_distanceX, move_distanceY
     return (0, 0)
         
-        
-
-
-if __name__ == "__main__":
-    move_cm(10, motor=kit1.stepper1)
-    time.sleep(1)
-    move_cm(-10, motor=kit1.stepper1)
-    time.sleep(1)
-
-    move_direction(speed=0.01, direction_to_move=[("front", 10), ("left", 5)])
-    time.sleep(1)
-    move_direction(speed=0.01, direction_to_move=[("rear", 10), ("right", 5)])
-    time.sleep(1)
-
+def get_moving_direction(DistanceX, DistanceY):
+    """
+    This function will return the motion for the mai movement and the rails, 
+    based on the distance of x and y it in pixels receives. It will move further if the number is higher
+    and move less distance for a lower number. This is based on the formula:
+    X/10, y/10 ???
     
+    :param DistanceX: This is the distance needed to move in the X axis, this axis is controled by main movement
+    :param DistanceY: This is the distance needed to move in the Y axis, this axis is controled by rail movement
+
+    return:
+        dict: Direction dict, but with correct values
+
+    """
+    moving_dict = direction_dict.copy()
+    # main movement
+    if DistanceX > 20:
+        moving_dict["front"] = [("rear_main", -abs(DistanceX)//10), ("front_main", abs(DistanceX)//10)]
+    elif DistanceX < -20:
+        moving_dict["rear"] = [("rear_main", abs(DistanceX)//10), ("front_main", -abs(DistanceX)//10)]
+    
+    # rail movement
+    if DistanceY > 20:
+        moving_dict["left"] = [("left_rail", abs(DistanceY)//10), ("right_rail", -abs(DistanceY)//10)]
+    elif DistanceY < -20:
+        moving_dict["right"] = [("right_rail", abs(DistanceY)//10), ("left_rail", -abs(DistanceY)//10)]
+
+
+    return  moving_dict
+
+
+
+
+if __name__ == "__main__":  
+    while True:
+        DistanceX, DistanceY = process_image()  
+        print(f"DistanceX: {DistanceX}, DistanceY: {DistanceY}")
+        # good till here, distance x and y are distnaces in pixels from center of image, assume camra is centered on robot
+        moving_dict = get_moving_direction(DistanceX, DistanceY)
+        # move in threads for each motor in main movement and rail movement
+        threads = []
+        if "front" in moving_dict:
+            t1 = threading.Thread(target=move_direction, args=(0.01, [("front", moving_dict["front"][0][1])]))
+            threads.append(t1)
+            t1.start()
+        if "rear" in moving_dict:
+            t2 = threading.Thread(target=move_direction, args=(0.01, [("rear", moving_dict["rear"][0][1])]))
+            threads.append(t2)
+            t2.start()
+        if "left" in moving_dict:
+            t3 = threading.Thread(target=move_direction, args=(0.01, [("left", moving_dict["left"][0][1])]))
+            threads.append(t3)
+            t3.start()
+        if "right" in moving_dict:
+            t4 = threading.Thread(target=move_direction, args=(0.01, [("right", moving_dict["right"][0][1])]))
+            threads.append(t4)
+            t4.start()
+
+        # wait for all threads to finish
+        for t in threads:
+            t.join()
+
+        
