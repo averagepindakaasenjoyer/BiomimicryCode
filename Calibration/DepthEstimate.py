@@ -51,8 +51,8 @@ Img_Couples = {
 
 SELECTED_IMG_COUPLE = '5'  # Change this index to select different image pairs
 SELECTED_FOLDER_INDEX = 0  # 0 for 8CM, 1 for 12CM, 2 for 16CM
-num_disparities = 16 * 5  # Must be divisible by 16
-block_size = 15  # Must be odd and >=1
+num_disparities = 128  # Must be divisible by 16 (increased for better range)
+block_size = 5  # Must be odd and >=1 (smaller = faster, more detail)
 
 file_path = (os.path.join(Calibration_Img_Dir, Distance_Cams_Folders[SELECTED_FOLDER_INDEX], Img_Couples[SELECTED_IMG_COUPLE]['left']),
              os.path.join(Calibration_Img_Dir, Distance_Cams_Folders[SELECTED_FOLDER_INDEX], Img_Couples[SELECTED_IMG_COUPLE]['right']))
@@ -69,7 +69,7 @@ else:
     stereo_parameters_path = os.getenv('STEREO_PARAMS_16CM')
 
 target_location = os.getenv('TARGET_LOCATION_DEPTHMAPS', '/')  # Directory to save depth maps
-show_depth_map = False  # Flag to display depth map
+show_depth_map = True  # Flag to display depth map
 
 
 def load_stereo_images(left_image_path, right_image_path):
@@ -100,28 +100,39 @@ def compute_depth_map(left_image, right_image, camera_parameters, stereo_paramet
     left_dist_coeffs = camera_parameters[2]
     right_dist_coeffs = camera_parameters[3]
 
-    # Get stereo rectification parameters
-    R1 = stereo_parameters['R1']
-    R2 = stereo_parameters['R2']
-    P1 = stereo_parameters['P1']
-    P2 = stereo_parameters['P2']
-    Q = stereo_parameters['Q']
+    # Get rotation and translation from stereo calibration
+    R = stereo_parameters['R']
     T = stereo_parameters['T']
-    print(f"Stereo baseline (T): {T}")
-    print("rotation matrix R1:\n", R1)
-    print("projection matrix P1:\n", P1)
-    print("rotation matrix R2:\n", R2)
-    print("projection matrix P2:\n", P2)
-    print("disparity-to-depth mapping matrix Q:\n", Q)
-    T[0,0] = -16
-    print(f"Stereo baseline (T): {T}")
-
     
+    print(f"Stereo baseline (T): {T}")
+    print(f"Rotation matrix (R):\n{R}")
+    
+    # Get image dimensions
     image_size = left_image.shape[::-1]  # (width, height)
+    h, w = left_image.shape
+    
+    # Perform stereo rectification (compute rectification transforms)
+    R1, R2, P1, P2, Q, roi_left, roi_right = cv2.stereoRectify(
+        left_camera_matrix, left_dist_coeffs,
+        right_camera_matrix, right_dist_coeffs,
+        image_size, R, T,
+        alpha=1  # Keep all pixels
+    )
+    
+    print("Rectification computed:")
+    print("  R1 (left rotation):\n", R1)
+    print("  R2 (right rotation):\n", R2)
+    print("  P1 (left projection):\n", P1)
+    print("  P2 (right projection):\n", P2)
+    print("  Q (disparity-to-depth):\n", Q)
     
     # Compute rectification maps
-    mapL1, mapL2 = cv2.initUndistortRectifyMap(left_camera_matrix, left_dist_coeffs, R1, P1, image_size, cv2.CV_32F)
-    mapR1, mapR2 = cv2.initUndistortRectifyMap(right_camera_matrix, right_dist_coeffs, R2, P2, image_size, cv2.CV_32F)
+    mapL1, mapL2 = cv2.initUndistortRectifyMap(
+        left_camera_matrix, left_dist_coeffs, R1, P1, image_size, cv2.CV_32FC1
+    )
+    mapR1, mapR2 = cv2.initUndistortRectifyMap(
+        right_camera_matrix, right_dist_coeffs, R2, P2, image_size, cv2.CV_32FC1
+    )
     
     # Apply rectification
     left_rectified = cv2.remap(left_image, mapL1, mapL2, cv2.INTER_LINEAR)
@@ -135,16 +146,13 @@ def compute_depth_map(left_image, right_image, camera_parameters, stereo_paramet
         P1=8 * 3 * block_size ** 2,
         P2=32 * 3 * block_size ** 2,
         disp12MaxDiff=1,
-        uniquenessRatio=15,
+        uniquenessRatio=10,
         speckleWindowSize=100,
-        speckleRange=32,
-        preFilterCap=63,
-        mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY
+        speckleRange=32
     )
     
     # Compute disparity map on rectified images
     disparity_map = stereo.compute(left_rectified, right_rectified).astype(np.float32) / 16.0
-
     
     # Debug: Check disparity range
     valid_disparities = disparity_map[disparity_map > 0]
@@ -154,24 +162,13 @@ def compute_depth_map(left_image, right_image, camera_parameters, stereo_paramet
         print("Warning: No valid disparities found!")
     
     # Convert disparity to depth using the Q matrix
-    # The Q matrix encodes: Z = -f*B / disparity where f is focal length and B is baseline
-    # The formula is: depth = Q[2,3] / disparity (note: Q[2,3] is typically negative)
+    # cv2.reprojectImageTo3D returns 3D points (X, Y, Z) in camera coordinates
+    points_3d = cv2.reprojectImageTo3D(disparity_map, Q)
+    depth_map = points_3d[:, :, 2]  # Extract Z coordinate (depth)
     
-    depth_map = np.zeros_like(disparity_map)
-    valid_mask = disparity_map > 0  # Only positive disparities yield valid depth
-    
-    # with np.errstate(divide='ignore', invalid='ignore'):
-    #     # Q[2,3] encodes -f*baseline, so division gives depth directly
-    #     depth_map[valid_mask] = Q[2, 3] / disparity_map[valid_mask]
-    # after you have disparity_map (in pixels, i.e. after /16)
-    points_3d = cv2.reprojectImageTo3D(disparity_map, Q)   # returns X,Y,Z in units of T (units of baseline)
-    depth_map = points_3d[:, :, 2]                         # Z channel
-
-    # mask invalid disparities
+    # Mask invalid disparities
     invalid_mask = (disparity_map <= 0) | ~np.isfinite(depth_map)
     depth_map[invalid_mask] = 0.0
-    # Ensure positive depths (take absolute value)
-    depth_map = np.abs(depth_map)
     
     return depth_map
 
@@ -190,12 +187,8 @@ if __name__ == "__main__":
 
     camera_params = (left_camera_matrix, right_camera_matrix, left_dist_coeffs, right_dist_coeffs)
     stereo_params = {
-        'T': stereo_params['T'],
-        'R1': stereo_params['R1'],
-        'R2': stereo_params['R2'],
-        'P1': stereo_params['P1'],
-        'P2': stereo_params['P2'],
-        'Q': stereo_params['Q']
+        'R': stereo_params['R'],
+        'T': stereo_params['T']
     }
 
     print("Camera and stereo parameters loaded.")

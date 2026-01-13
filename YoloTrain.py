@@ -17,18 +17,23 @@ dotenv.load_dotenv()
 # Augmentation configuration
 AUGMENTATION = {
     "enable": True,
-    "translate": 0.1,
-    "scale": 0.5,
+    "mosaic": 1.0,              # Critical for small object detection (flowers)
+    "mixup": 0.1,               # Regularization via mixing images
+    "translate": 0.15,
+    "scale": 0.25,              # Reduced from 0.5 to preserve small flower objects
     "shear": 5.0,
-    "degrees": 10.0,
-    "perspective": 0.0002,
+    "degrees": 15.0,
+    "perspective": 0.001,       # Increased from 0.0002 for better robustness
     "erasing": 0.02,
+    "hsv_h": 0.015,             # Color jittering for flower color invariance
+    "hsv_s": 0.7,               # Saturation variation
+    "hsv_v": 0.4,               # Brightness variation
 }
 
 # Training hyperparameters (weight decay and dropout)
 TRAINING_HYP = {
-    "weight_decay": 0.0005,  # L2 regularization (passed to optimizer/trainer)
-    "dropout": 0.0,          # Best-effort: will set p on existing Dropout modules if present
+    "weight_decay": 0.001,   # Increased L2 regularization for better generalization
+    "dropout": 0.3,          # Enable dropout to prevent overfitting (0.3 is moderate)
 }
 
 
@@ -64,19 +69,29 @@ def apply_dropout(yolo_model, p):
 # -------------------- Hyperparameter tuning config + helper --------------------
 # Set `HYPERPARAM_TUNING['enable'] = True` to run automatic tuning before training.
 HYPERPARAM_TUNING = {
-    'enable': False,
+    'enable': True,
     'model': 'yolo11n.pt',
     'data': 'data.yaml',
-    'epochs': 30,
-    'iterations': 300,
+    'epochs': 15,             # Reduced from 30 (shorter trials for efficiency)
+    'iterations': 150,        # Reasonable number of trials
     'optimizer': 'AdamW',
     'space': {
-        'lr0': (1e-5, 1e-1),
-        'degrees': (0.0, 45.0),
+        'lr0': (1e-4, 1e-2),                    # Narrower, more practical learning rate range
+        'lrf': (0.01, 0.1),                    # Final LR ratio (learning rate decay)
+        'momentum': (0.6, 0.98),               # Optimizer momentum
+        'weight_decay': (0.0, 0.001),          # L2 regularization range
+        'hsv_h': (0.0, 0.1),                   # HSV hue shift for flower color invariance
+        'hsv_s': (0.0, 0.9),                   # HSV saturation range
+        'hsv_v': (0.0, 0.3),                   # HSV value/brightness range
+        'degrees': (0.0, 30.0),                # Conservative rotation for flower detection
+        'translate': (0.0, 0.3),               # Translation augmentation range
+        'scale': (0.0, 0.3),                   # Scale range (preserve small objects)
+        'mosaic': (0.0, 1.0),                  # Mosaic augmentation (crucial for small objects!)
+        'mixup': (0.0, 0.3),                   # Mixup regularization
     },
-    'plots': False,
-    'save': False,
-    'val': False,
+    'plots': True,            # Visualize tuning progress
+    'save': True,             # Save best tuned model
+    'val': True,              # Validate during tuning
 }
 
 
@@ -151,10 +166,10 @@ def run_training_validation(device):
     workers = 2
 
     # two-stage training params
-    freeze_epochs = 2  # freeze backbone for these first epochs
-    total_epochs = 1000
-    early_stop_patience = 3  # number of chunks with no improvement before stopping
-    chunk_size = 5  # train in chunks after unfreezing to allow early stopping checks
+    freeze_epochs = 10         # Increased from 2 for better backbone stabilization
+    total_epochs = 200         # Reduced from 1000 (flowers are simple; early stopping will kick in)
+    early_stop_patience = 7    # Increased from 3 (was too aggressive: ~35 epochs before stopping)
+    chunk_size = 10            # Increased from 5 for more stable training
 
     if device.startswith("cuda"):
         try:
@@ -169,11 +184,19 @@ def run_training_validation(device):
         'workers': workers,
         'device': device,
         'weight_decay': TRAINING_HYP.get('weight_decay', 0.0),
+        'warmup_epochs': 5.0,    # Gradual learning rate ramp-up
+        'warmup_bias_lr': 0.1,   # Warmup for biases
+        'label_smoothing': 0.1,  # Regularization via label smoothing
+        'patience': 7,           # Patience for early stopping
     }
 
     # Add augmentation flags if enabled in AUGMENTATION config
     if AUGMENTATION.get('enable'):
         train_common['augment'] = True
+        if 'mosaic' in AUGMENTATION:
+            train_common['mosaic'] = AUGMENTATION['mosaic']
+        if 'mixup' in AUGMENTATION:
+            train_common['mixup'] = AUGMENTATION['mixup']
         if 'translate' in AUGMENTATION:
             train_common['translate'] = AUGMENTATION['translate']
         if 'scale' in AUGMENTATION:
@@ -186,6 +209,12 @@ def run_training_validation(device):
             train_common['perspective'] = AUGMENTATION['perspective']
         if 'erasing' in AUGMENTATION:
             train_common['erasing'] = AUGMENTATION['erasing']
+        if 'hsv_h' in AUGMENTATION:
+            train_common['hsv_h'] = AUGMENTATION['hsv_h']
+        if 'hsv_s' in AUGMENTATION:
+            train_common['hsv_s'] = AUGMENTATION['hsv_s']
+        if 'hsv_v' in AUGMENTATION:
+            train_common['hsv_v'] = AUGMENTATION['hsv_v']
 
 
     try:
@@ -247,6 +276,10 @@ def run_training_validation(device):
                     aug_args = ''
                     if AUGMENTATION.get('enable'):
                         aug_args += f", augment={repr(True)}"
+                        if 'mosaic' in AUGMENTATION:
+                            aug_args += f", mosaic={repr(AUGMENTATION['mosaic'])}"
+                        if 'mixup' in AUGMENTATION:
+                            aug_args += f", mixup={repr(AUGMENTATION['mixup'])}"
                         if 'translate' in AUGMENTATION:
                             aug_args += f", translate={repr(AUGMENTATION['translate'])}"
                         if 'scale' in AUGMENTATION:
@@ -259,9 +292,16 @@ def run_training_validation(device):
                             aug_args += f", perspective={repr(AUGMENTATION['perspective'])}"
                         if 'erasing' in AUGMENTATION:
                             aug_args += f", erasing={repr(AUGMENTATION['erasing'])}"
+                        if 'hsv_h' in AUGMENTATION:
+                            aug_args += f", hsv_h={repr(AUGMENTATION['hsv_h'])}"
+                        if 'hsv_s' in AUGMENTATION:
+                            aug_args += f", hsv_s={repr(AUGMENTATION['hsv_s'])}"
+                        if 'hsv_v' in AUGMENTATION:
+                            aug_args += f", hsv_v={repr(AUGMENTATION['hsv_v'])}"
 
-                    # add weight_decay to subprocess args
+                    # add weight_decay and warmup parameters to subprocess args
                     aug_args += f", weight_decay={repr(TRAINING_HYP.get('weight_decay', 0.0))}"
+                    aug_args += f", warmup_epochs=5.0, warmup_bias_lr=0.1, label_smoothing=0.1, patience=7"
 
                     # If dropout is requested, attempt to set existing Dropout modules in the subprocess model instance.
                     # We craft a compact one-line snippet that loads the checkpoint, sets dropout on any Dropout modules,
