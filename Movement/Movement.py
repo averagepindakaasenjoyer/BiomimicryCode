@@ -91,10 +91,18 @@ if __name__ == "__main__":
     move_direction(speed=0.01, direction_to_move=[("left", 100)])
     time.sleep(1)
     print("Moving right ")
-    move_direction(speed=0.01, direction_to_move=[("right", 100)])
+    move_direction(speed=0.01, direction_to_move=[("right", -100)])
     time.sleep(1)
     print("releasing all motors")
     release_all_motors()
+    # while True:
+    #     X = input("up or down: ")
+    #     if X == "up":
+    #         move_cm(20, speed=0.0 , motor=kit2.stepper1)
+    #     elif X == "down":
+    #         move_cm(-20, speed=0.0, motor=kit2.stepper1)
+
+    #     release_all_motors()
 
         
 
