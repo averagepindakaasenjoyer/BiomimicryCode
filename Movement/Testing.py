@@ -1,299 +1,309 @@
-"""
-Simulation-capable version of your robot movement code.
-Drop this file in place of the original to run without Adafruit hardware.
-Requires: numpy, opencv-python
-"""
+# CombinedMove.py
+# Combines smooth multithreaded motor control with image-based movement.
+# Based on original MoveImage.py and MultiThreadMove.py (combined & refactored).
+#
+# Requirements:
+#  - adafruit_motorkit, adafruit_motor.stepper, board
+#  - numpy, opencv-python
+#  - A USB camera available as /dev/video0 (cv2.VideoCapture(0))
+#
+# How it works (short):
+#  - detect_circle() finds the largest yellow-ish circular blob and returns its normalized center.
+#  - process_image() returns pixel offsets from image center.
+#  - offsets are mapped to desired linear movements (cm) by a simple proportional mapping (pixels / PIXELS_PER_CM).
+#  - movement plan is converted into per-motor step counts (using STEPS_PER_CM).
+#  - each motor is driven in its own thread with a per-step delay (STEP_DELAY) for smooth motion.
+#  - main loop processes one image, waits for movement to finish, then repeats.
 
 import time
+import threading
+import board
 import numpy as np
 import cv2
-import threading
+from adafruit_motor import stepper
+from adafruit_motorkit import MotorKit
+import sys
+import signal
 
-# ----- CONFIG -----
-SIMULATE = True        # Set False when switching to real hardware and Adafruit libs
-VIDEO_INDEX = 0        # webcam index; if no webcam available synthetic image is used
-diameter_wheel = 2.5   # cm
-circumference_wheel = diameter_wheel * np.pi
-steps_per_revolution = 200
-steps_per_cm = steps_per_revolution / circumference_wheel
+# ---------- Hardware setup ----------
+kit1 = MotorKit(i2c=board.I2C(), address=0x60)
+kit2 = MotorKit(i2c=board.I2C(), address=0x61)
 
-# conversion used for PIXEL -> CM in get_moving_direction (calibrate for your setup)
-PIXELS_PER_CM = 40.0
-
-# small deadzone in pixels
-DEADZONE_PX = 20
-
-# step delay
-DEFAULT_STEP_SPEED = 0.01
-
-# ----- MOCK / REAL MOTOR SETUP -----
-# In simulate mode we provide MockStepper objects that print actions.
-# When you want to run on hardware, replace the mock setup with your MotorKit setup
-# and keep the rest of the script the same (see notes at the end).
-
-FORWARD = 1
-BACKWARD = -1
-
-class MockStepper:
-    def __init__(self, name):
-        self.name = name
-        self.position = 0
-        self._lock = threading.Lock()
-    def onestep(self, direction=FORWARD, style=None):
-        # accept numeric direction or stepper.FORWARD/BACKWARD
-        d = 1 if direction == FORWARD else -1
-        with self._lock:
-            self.position += d
-        print(f"[MOCK] {self.name} onestep({d}) -> pos={self.position}")
-    def release(self):
-        print(f"[MOCK] {self.name} released")
-
-# instantiate motor_dict (same keys you use elsewhere)
 motor_dict = {
-    "rear_main": MockStepper("rear_main"),
-    "front_main": MockStepper("front_main"),
-    "right_rail": MockStepper("right_rail"),
-    "left_rail": MockStepper("left_rail"),
-    "arm": MockStepper("arm"),
+    "rear_main": kit1.stepper1,
+    "front_main": kit1.stepper2,
+    "right_rail": kit2.stepper1,
+    "left_rail": kit2.stepper2,
+    # "arm": kit3.stepper1,  # unused here
 }
 
-# mapping of logical directions to physical motors (multiplier indicates sign)
+# Motor logical directions (how we treat a "front"/"rear"/"left"/"right" move)
+# Each tuple: (motor_name, direction_multiplier)
 direction_dict = {
-    "front": [("rear_main", -1), ("front_main", 1)],
-    "rear": [("rear_main", 1), ("front_main", -1)],
-    "left": [("left_rail", 1), ("right_rail", -1)],
-    "right": [("right_rail", 1), ("left_rail", -1)],
-    "up": [("arm", 1)],
-    "down": [("arm", -1)],
+    "front": [("rear_main", -1), ("front_main", 1)],   # forward = rear_main backward, front_main forward
+    "rear":  [("rear_main", 1),  ("front_main", -1)],  # backward
+    "left":  [("left_rail", 1),  ("right_rail", 1)],  # rails move sideways
+    "right": [("right_rail", -1),  ("left_rail", -1)],
 }
 
-# ----- MOVEMENT PRIMITIVES -----
+# ---------- Motion parameters (tweak as needed) ----------
+WHEEL_DIAMETER_CM = 2.5
+CIRCUMFERENCE_CM = WHEEL_DIAMETER_CM * np.pi
+STEPS_PER_REV = 200                # Nema17 typical
+STEPS_PER_CM = STEPS_PER_REV / CIRCUMFERENCE_CM
+scale_move = 0.1 # Scale factor for movement responsiveness (tweak as needed)
+# How many image pixels correspond to 1 cm of robot motion (approx).
+# This is a tunable camera -> robot scale. If unknown, start with 10 (pixels->cm) (same idea as your original).
+PIXELS_PER_CM = 10.0
 
-def move_cm(distance_cm, speed=DEFAULT_STEP_SPEED, motor=None):
+# Step delay for smooth motion (seconds). Lower =faster. Keep >= ~0.003 for most steppers.
+STEP_DELAY = 0.01
+
+# Maximum allowed movement per cycle (safety)
+MAX_CM_PER_CYCLE = 30.0
+MAX_STEPS_PER_CYCLE = int(MAX_CM_PER_CYCLE * STEPS_PER_CM)
+
+# Hough detection tuning
+MIN_YELLOW_HSV = np.array([20, 100, 100])
+MAX_YELLOW_HSV = np.array([30, 255, 255])
+
+# ---------- Utility functions ----------
+def clamp(n, small, large):
+    return max(small, min(n, large))
+
+# Motor stepping worker: moves a single motor a given number of steps (signed).
+def motor_step_worker(motor_obj, steps, step_delay=STEP_DELAY, style=stepper.DOUBLE):
     """
-    Move a single motor by distance_cm (signed). `motor` is a stepper object.
-    If motor is None, default to rear_main mock motor.
+    Drive 'motor_obj' for 'steps' steps. Steps is signed: positive -> FORWARD, negative -> BACKWARD.
+    This runs in its own thread.
     """
-    if motor is None:
-        motor = motor_dict["rear_main"]
-    steps = int(round(abs(distance_cm) * steps_per_cm))
     if steps == 0:
         return
-    direction = FORWARD if distance_cm > 0 else BACKWARD
-    for _ in range(steps):
-        motor.onestep(direction=direction, style=None)
-        time.sleep(speed)
-    motor.release()
+    direction = stepper.FORWARD if steps > 0 else stepper.BACKWARD
+    steps = abs(int(steps))
+    try:
+        for _ in range(steps):
+            motor_obj.onestep(direction=direction, style=style)
+            time.sleep(step_delay)
+    except Exception as e:
+        # Best-effort: stop gracefully on error
+        print(f"[motor error] {e}")
+    finally:
+        try:
+            motor_obj.release()
+        except Exception:
+            pass
 
-def move_direction(speed=DEFAULT_STEP_SPEED, direction_to_move=None):
-    """
-    direction_to_move: list of tuples [(direction_name, distance_cm), ...]
-    distance_cm may be positive or negative; sign controls net direction.
-    This function translates logical directions to physical motors and steps each motor
-    the required number of steps (per-motor remaining-step tracking).
-    """
-    if direction_to_move is None:
-        direction_to_move = [("front", 0)]
+# Release all motors (call when exiting)
+def release_all_motors():
+    for m in motor_dict.values():
+        try:
+            m.release()
+        except Exception:
+            pass
 
-    # Build per-physical motor required steps and direction
-    motor_tasks = {}  # motor_name -> (steps, sign)
-    for dir_name, dist_cm in direction_to_move:
-        if dir_name not in direction_dict:
-            continue
-        for motor_name, motor_mult in direction_dict[dir_name]:
-            # Effective sign: motor_mult * sign(dist_cm)
-            sign = 1 if dist_cm >= 0 else -1
-            effective_sign = motor_mult * sign
-            steps = int(round(abs(dist_cm) * steps_per_cm))
-            if steps == 0:
-                continue
-            # If motor already in tasks, keep the max steps (simple merging)
-            prev = motor_tasks.get(motor_name)
-            if prev is None or steps > prev[0]:
-                motor_tasks[motor_name] = (steps, effective_sign)
-
-    # Per-motor stepping loop
-    remaining = {m: cnt for (m, (cnt, _)) in motor_tasks.items()}
-    signs = {m: s for (m, (_, s)) in motor_tasks.items()}
-
-    while any(v > 0 for v in remaining.values()):
-        for m in list(remaining.keys()):
-            if remaining[m] <= 0:
-                continue
-            motor_obj = motor_dict.get(m)
-            if motor_obj is None:
-                continue
-            direction = FORWARD if signs[m] > 0 else BACKWARD
-            motor_obj.onestep(direction=direction, style=None)
-            remaining[m] -= 1
-        time.sleep(speed)
-
-    for m in motor_tasks.keys():
-        motor_dict[m].release()
-
-# ----- IMAGE PROCESSING -----
-
+# ---------- Image processing ----------
 def detect_circle(image):
     """
-    Detect yellow circle. Returns list of normalized centers [(nx, ny), ...] (0..1).
-    Returns empty list if none found.
+    Detect yellow circle-like blobs and return center normalized (x_pct, y_pct).
+    Returns None if nothing found.
     """
-    recognized = []
     if image is None:
-        return recognized
-
+        return None
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    lower_yellow = np.array([18, 100, 100])
-    upper_yellow = np.array([35, 255, 255])
-    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+    mask = cv2.inRange(hsv, MIN_YELLOW_HSV, MAX_YELLOW_HSV)
     masked = cv2.bitwise_and(image, image, mask=mask)
     gray = cv2.cvtColor(masked, cv2.COLOR_BGR2GRAY)
 
+    # Denoise
     gray = cv2.medianBlur(gray, 7)
     gray = cv2.GaussianBlur(gray, (9, 9), 0)
 
     h, w = image.shape[:2]
-    min_r = max(10, int(min(h, w) * 0.05))
-    max_r = int(min(h, w) * 0.4)
+    min_r = max(10, int(min(h, w) * 0.03))
+    max_r = int(min(h, w) * 0.45)
 
-    circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT,
-                               dp=1.5,
-                               minDist=max(h, w) // 4,
-                               param1=100,
-                               param2=40,
-                               minRadius=min_r,
-                               maxRadius=max_r)
+    # HoughCircles parameters tuned for robust detection of a single prominent circle
+    circles = cv2.HoughCircles(
+        gray, cv2.HOUGH_GRADIENT,
+        dp=1.5,
+        minDist=max(h, w) // 2,
+        param1=100,
+        param2=40,
+        minRadius=min_r,
+        maxRadius=max_r
+    )
+
     if circles is None:
-        return recognized
+        return None
 
     circles = np.uint16(np.around(circles))
-    # choose the largest by radius
-    best = None
-    best_r = -1
-    for c in circles[0, :]:
-        if c[2] > best_r:
-            best = c
-            best_r = c[2]
-    cx, cy = best[0], best[1]
-    nx = cx / float(w)
-    ny = cy / float(h)
-    recognized.append((nx, ny))
+    # take the first (largest/only) detection
+    cx, cy, r = circles[0, 0]
+    return (cx / w, cy / h)
 
-    # draw debug markers
-    cv2.circle(image, (int(cx), int(cy)), 3, (0, 255, 0), -1)
-    cv2.circle(image, (int(cx), int(cy)), int(best_r), (255, 0, 0), 2)
-
-    return recognized
-
-def process_image():
+def process_image_once(cap):
     """
-    Capture a frame from webcam if available; otherwise generate a synthetic image.
-    Returns (move_distanceX_px, move_distanceY_px).
+    Capture a frame from given cv2.VideoCapture and return pixel offsets (dx, dy) from center.
+    dx positive => circle is to the right; dy positive => circle is down.
+    Returns None on failure.
     """
-    cap = cv2.VideoCapture(VIDEO_INDEX)
     ret, frame = cap.read()
     if not ret or frame is None:
-        # fallback synthetic image
-        w, h = 640, 480
-        frame = np.zeros((h, w, 3), dtype=np.uint8)
-        # place a yellow circle slightly right and down so we get non-zero offsets
-        cv2.circle(frame, (int(w*0.65), int(h*0.6)), 40, (0, 255, 255), -1)
-        ret = True
-    cap.release()
+        return None
+    detected = detect_circle(frame)
+    if detected is None:
+        return (0, 0, frame)  # no circle: zero offsets
+    cx_norm, cy_norm = detected
+    h, w = frame.shape[:2]
+    cx_px = int(cx_norm * w)
+    cy_px = int(cy_norm * h)
+    dx = cx_px - (w // 2)
+    dy = cy_px - (h // 2)
+    return (dx, dy, frame)
 
-    if not ret:
-        print("Failed to capture or generate image")
-        return (0, 0)
-
-    circles = detect_circle(frame)
-    image_h, image_w = frame.shape[:2]
-    if circles:
-        nx, ny = circles[0]
-        cx_px = int(nx * image_w)
-        cy_px = int(ny * image_h)
-        center_x = image_w // 2
-        center_y = image_h // 2
-        move_distanceX = cx_px - center_x
-        move_distanceY = cy_px - center_y
-        # debug visual
-        cv2.imshow("debug", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            pass
-        return (move_distanceX, move_distanceY)
-
-    # show frame for debugging if no circle
-    cv2.imshow("debug", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        pass
-    return (0, 0)
-
-# ----- LOGIC TO CONVERT PIXEL OFFSETS TO MOTOR ACTIONS -----
-
-def get_moving_direction(DistanceX, DistanceY):
+# ---------- Motion planning ----------
+def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
     """
-    Convert pixel distances to a movement dictionary with keys only for required movements.
-    Returned format matches your main loop checks: e.g.
-      {'front': [('rear_main', -2.0), ('front_main', 2.0)], ...}
-    Distances are in CM (float) encoded as the second element in the tuples
-    and will be used by the main loop as the distance value.
+    Convert pixel offsets to per-motor step counts.
+      - dx controls main forward/rear movement
+      - dy controls left/right rail movement
+    Returns dict: { motor_name: signed_step_count, ... }
     """
-    moving_dict = {}
+    # Map pixels -> cm using PIXELS_PER_CM
+    dx_cm = dx_pixels / PIXELS_PER_CM
+    dy_cm = dy_pixels / PIXELS_PER_CM
 
-    # Convert pixel offset to cm (simple linear mapping)
-    # NOTE: calibrate PIXELS_PER_CM for your camera/robot geometry
-    if abs(DistanceX) > DEADZONE_PX:
-        cm_x = DistanceX / PIXELS_PER_CM  # signed: positive means circle is right of center
-        # decide whether that corresponds to 'front' or 'rear' for your robot:
-        if cm_x > 0:
-            moving_dict["front"] = [("rear_main", -abs(cm_x)), ("front_main", abs(cm_x))]
+    # clamp per-cycle
+    dx_cm = clamp(dx_cm, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
+    dy_cm = clamp(dy_cm, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
+
+    # Determine which logical movement we need and magnitude (we'll split into per-motor later)
+    # Positive dx_cm means object is to the right -> we probably need to move "front" or "rear".
+    # In original code they used X/10 -> we preserve sign and magnitude logic.
+    # We'll map dx_cm > 0 -> move front (positive forward), dx_cm < 0 -> move rear.
+    move_plan = {}  # motor_name -> signed steps
+
+    # main (X axis)
+    if abs(dx_cm) >= 0.5:  # deadzone ~ 0.5 cm
+        # choose 'front' for positive dx_cm (object is right) - this depends on camera/robot alignment
+        # Use the direction_dict mapping to split between rear_main and front_main
+        if dx_cm > 0:
+            entries = direction_dict["front"]
         else:
-            moving_dict["rear"] = [("rear_main", abs(cm_x)), ("front_main", -abs(cm_x))]
+            entries = direction_dict["rear"]
+        # For each motor entry: multiplier is +/-1, we compute steps proportional to abs(dx_cm)
+        steps_for_cm = abs(dx_cm) * STEPS_PER_CM * scale_move
+        for motor_name, multiplier in entries:
+            # the original code used per-motor multipliers (some were +/-); keep sign in multiplier
+            motor_steps = int(multiplier * steps_for_cm)
+            # sum into plan
+            move_plan[motor_name] = move_plan.get(motor_name, 0) + motor_steps
 
-    if abs(DistanceY) > DEADZONE_PX:
-        cm_y = DistanceY / PIXELS_PER_CM
-        # positive Y means circle below center; mapping to rails depends on camera orientation
-        if cm_y > 0:
-            moving_dict["left"] = [("left_rail", abs(cm_y)), ("right_rail", -abs(cm_y))]
+    # rails (Y axis) - typically slide left/right
+    if abs(dy_cm) >= 0.5:
+        if dy_cm > 0:
+            entries = direction_dict["left"]
         else:
-            moving_dict["right"] = [("right_rail", abs(cm_y)), ("left_rail", -abs(cm_y))]
+            entries = direction_dict["right"]
+        steps_for_cm = abs(dy_cm) * STEPS_PER_CM * scale_move
+        for motor_name, multiplier in entries:
+            motor_steps = int(multiplier * steps_for_cm)
+            move_plan[motor_name] = move_plan.get(motor_name, 0) + motor_steps
 
-    return moving_dict
+    # Safety cap: ensure no motor exceeds max steps per cycle
+    for k in list(move_plan.keys()):
+        capped = clamp(move_plan[k], -MAX_STEPS_PER_CYCLE, MAX_STEPS_PER_CYCLE)
+        move_plan[k] = int(capped)
 
-# ----- MAIN LOOP (keeps your structure so you don't need to edit other code) -----
+    return move_plan
 
-if __name__ == "__main__":
+# ---------- Main loop ----------
+def main_loop(camera_index=0, show_debug=False):
+    cap = cv2.VideoCapture(camera_index)
+    if not cap.isOpened():
+        print("Error: cannot open camera index", camera_index)
+        return
+
     try:
         while True:
-            DistanceX, DistanceY = process_image()
-            print(f"DistanceX: {DistanceX}, DistanceY: {DistanceY}")
-            moving_dict = get_moving_direction(DistanceX, DistanceY)
+            proc = process_image_once(cap)
+            if proc is None:
+                print("Camera read failed, retrying...")
+                time.sleep(0.2)
+                continue
+            dx, dy, frame = proc
+            # Print debug info
+            print(f"dx(pixels)={dx}, dy(pixels)={dy}")
 
+            # Plan movement
+            plan = convert_offsets_to_motor_steps(dx, dy)
+            if not plan:
+                # nothing to move
+                if show_debug:
+                    cv2.putText(frame, "No target", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+                    cv2.imshow("frame", frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                time.sleep(0.08)
+                continue
+
+            # Start motor threads concurrently
             threads = []
-            if "front" in moving_dict:
-                # value used by your original main: pick first tuple's second element as the distance
-                t1 = threading.Thread(target=move_direction, args=(0.01, [("front", moving_dict["front"][0][1])]))
-                threads.append(t1)
-                t1.start()
-            if "rear" in moving_dict:
-                t2 = threading.Thread(target=move_direction, args=(0.01, [("rear", moving_dict["rear"][0][1])]))
-                threads.append(t2)
-                t2.start()
-            if "left" in moving_dict:
-                t3 = threading.Thread(target=move_direction, args=(0.01, [("left", moving_dict["left"][0][1])]))
-                threads.append(t3)
-                t3.start()
-            if "right" in moving_dict:
-                t4 = threading.Thread(target=move_direction, args=(0.01, [("right", moving_dict["right"][0][1])]))
-                threads.append(t4)
-                t4.start()
+            for motor_name, steps in plan.items():
+                motor_obj = motor_dict.get(motor_name)
+                if motor_obj is None:
+                    print("Unknown motor:", motor_name)
+                    continue
+                if steps == 0:
+                    continue
+                t = threading.Thread(target=motor_step_worker, args=(motor_obj, steps, STEP_DELAY))
+                t.daemon = True
+                threads.append(t)
+                t.start()
 
+            # Optional visual debug overlay
+            if show_debug:
+                h, w = frame.shape[:2]
+                cx = w // 2 + int(dx)
+                cy = h // 2 + int(dy)
+                cv2.circle(frame, (cx, cy), 10, (0,255,0), -1)
+                cv2.line(frame, (w//2, h//2), (cx, cy), (255,0,0), 2)
+                cv2.imshow("frame", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+
+            # Wait for movement to finish before processing next image (simple, robust)
             for t in threads:
                 t.join()
 
-            # small delay between frames
-            time.sleep(0.1)
+            # short delay to avoid spamming camera & motors
+            time.sleep(0.05)
 
     except KeyboardInterrupt:
-        print("Interrupted by user, exiting.")
+        print("Interrupted by user.")
     finally:
-        cv2.destroyAllWindows()
+        cap.release()
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
+        release_all_motors()
+
+
+if __name__ == "__main__":
+    # Small CLI options
+    show_debug = True
+    camera_index = 0
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ("--debug", "-d"):
+            show_debug = True
+        else:
+            try:
+                camera_index = int(sys.argv[1])
+            except ValueError:
+                pass
+
+    print("Starting combined image-driven multithreaded motor controller.")
+    print("Press Ctrl+C to stop.")
+    main_loop(camera_index=camera_index, show_debug=show_debug)

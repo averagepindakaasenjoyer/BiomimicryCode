@@ -19,20 +19,20 @@ import threading
 
 kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
-kit3 = MotorKit(i2c=board.I2C(), address=0x62)
+# kit3 = MotorKit(i2c=board.I2C(), address=0x62)
 motor_dict = {
     "rear_main": kit1.stepper1,
     "front_main": kit1.stepper2,
     "right_rail": kit2.stepper1,
     "left_rail": kit2.stepper2,
-    "arm": kit3.stepper1,
+    # "arm": kit3.stepper1,
 }
 
 direction_dict = {
     "front": [("rear_main", -1), ("front_main", 1)],
     "rear": [("rear_main", 1), ("front_main", -1)],
-    "left": [("left_rail", 1), ("right_rail", -1)],
-    "right": [("right_rail", 1), ("left_rail", -1)],
+    "left": [("left_rail", 1), ("right_rail", 1)],
+    "right": [("right_rail", -1), ("left_rail", -1)],
     "up": [("arm", 1)],
     "down": [("arm", -1)],
 }

@@ -102,8 +102,8 @@ def release_all_motors():
 if __name__ == "__main__":
     # Example usage: Move forward 20 cm and right 10 cm simultaneously
     
-    thread1 = threading.Thread(target=move_cm, args=(20, 0.01, [kit2.stepper1], False))
-    thread2 = threading.Thread(target=move_cm, args=(20, 0.01, [kit2.stepper2], False))
+    thread1 = threading.Thread(target=move_cm, args=(20, 0.01, [kit1.stepper1], False))
+    thread2 = threading.Thread(target=move_cm, args=(-20, 0.01, [kit1.stepper2], False))
 
     thread1.start()
     thread2.start()
@@ -111,13 +111,13 @@ if __name__ == "__main__":
     thread1.join()
     thread2.join()
 
-    thread1 = threading.Thread(target=move_cm, args=(20, 0.01, [kit2.stepper1], False))
-    thread2 = threading.Thread(target=move_cm, args=(20, 0.01, [kit2 .stepper2], False))
+    # thread1 = threading.Thread(target=move_cm, args=(20, 0.01, [kit2.stepper1], False))
+    # thread2 = threading.Thread(target=move_cm, args=(20, 0.01, [kit2 .stepper2], False))
 
-    thread1.start()
-    thread2.start()
+    # thread1.start()
+    # thread2.start()
 
-    thread1.join()
-    thread2.join()
+    # thread1.join()
+    # thread2.join()
 
     release_all_motors()
