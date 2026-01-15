@@ -7,13 +7,21 @@
 #  - numpy, opencv-python
 #  - A USB camera available as /dev/video0 (cv2.VideoCapture(0))
 #
-# How it works (short):
+# How it works (short rails):
 #  - detect_circle() finds the largest yellow-ish circular blob and returns its normalized center.
 #  - process_image() returns pixel offsets from image center.
 #  - offsets are mapped to desired linear movements (cm) by a simple proportional mapping (pixels / PIXELS_PER_CM).
 #  - movement plan is converted into per-motor step counts (using STEPS_PER_CM).
 #  - each motor is driven in its own thread with a per-step delay (STEP_DELAY) for smooth motion.
 #  - main loop processes one image, waits for movement to finish, then repeats.
+
+# How it works (arm):
+# - find flower using Yolo model
+# - calcualte depth position based on stereo vision
+# - move arm up/down based on depth position
+
+
+
 
 import time
 import threading
@@ -34,7 +42,7 @@ motor_dict = {
     "front_main": kit1.stepper2,
     "right_rail": kit2.stepper1,
     "left_rail": kit2.stepper2,
-}
+    'arm': kit2.stepper2},
 
 # Motor logical directions (how we treat a "front"/"rear"/"left"/"right" move)
 # Each tuple: (motor_name, direction_multiplier)
@@ -58,8 +66,23 @@ PIXELS_PER_CM = 10.0
 STEP_DELAY = 0.01
 
 # Maximum allowed movement per cycle (safety)
-MAX_CM_PER_CYCLE = 30.0
+MAX_CM_PER_CYCLE = 10.0
 MAX_STEPS_PER_CYCLE = int(MAX_CM_PER_CYCLE * STEPS_PER_CM)
+
+
+# ---------- Arm parameters ----------
+WHEEL_DIAMETER_CM_ARM = 4.3 # in cm
+CIRCUMFERENCE_CM_ARM = WHEEL_DIAMETER_CM_ARM * np.pi
+STEPS_PER_REV_ARM = 200  # Steps per full revolution of the stepper motor
+STEPS_PER_CM_ARM = STEPS_PER_REV_ARM / CIRCUMFERENCE_CM_ARM
+STEP_DELAY_ARM = 0.01
+
+
+
+
+
+
+
 
 # Hough detection tuning
 MIN_YELLOW_HSV = np.array([20, 100, 100])
@@ -216,6 +239,23 @@ def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
 
     return move_plan
 
+
+def convert_depth_to_arm_steps(depth_cm, current_arm_pos_cm= 0.0):
+    """
+    Convert depth position to arm motor steps.
+    depth_cm: desired depth position in cm
+    current_arm_pos_cm: current arm position in cm assume 0.0 since we have no feedback and move it back to 0 each time
+    Returns signed step count for arm motor.
+    """
+    # Simple proportional control: move arm to reach desired depth
+    error_cm = depth_cm - current_arm_pos_cm
+    # Clamp movement to reasonable range
+    error_cm = clamp(error_cm, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
+    steps = int(error_cm * STEPS_PER_CM_ARM)
+    return steps
+
+
+
 # ---------- Main loop ----------
 def main_loop(camera_index=0, show_debug=False):
     cap = cv2.VideoCapture(camera_index)
@@ -277,6 +317,25 @@ def main_loop(camera_index=0, show_debug=False):
 
             # short delay to avoid spamming camera & motors
             time.sleep(0.05)
+
+
+            # if the arm is above the flower based on the earlier calculations, move the arm up/down
+            # For simplicity, we assume a fixed desired depth for now (e.g., 15 cm)
+            if abs(dx) < 20 and abs(dy) < 20:
+                desired_depth_cm = 15.0
+                """
+                add depth calcualtions HERE !!!!!! to replace desired_depth_cm variable
+                
+                """
+
+
+
+                arm_steps = convert_depth_to_arm_steps(desired_depth_cm)
+                if arm_steps != 0:
+                    motor_obj = motor_dict.get("arm")
+                    motor_step_worker(motor_obj, arm_steps, STEP_DELAY_ARM)
+                    
+            
 
     except KeyboardInterrupt:
         print("Interrupted by user.")
