@@ -328,12 +328,11 @@ def main_loop(camera_index=0, show_debug=False):
                 
                 """
 
-
-
                 arm_steps = convert_depth_to_arm_steps(desired_depth_cm)
                 if arm_steps != 0:
                     motor_obj = motor_dict.get("arm")
                     motor_step_worker(motor_obj, arm_steps, STEP_DELAY_ARM)
+                    motor_step_worker(motor_obj, -arm_steps, STEP_DELAY_ARM)  # move back to original position
                     
             
 
