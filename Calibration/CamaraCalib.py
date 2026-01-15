@@ -24,7 +24,6 @@ import numpy as np
 
 # ---------------------------
 # User / repository constants
-# (kept exactly as provided by you)
 # ---------------------------
 CALIB_IMG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'CalibImg'))
 CAMERA_PREFIXES = ['camera_0', 'camera_2']
