@@ -10,18 +10,16 @@ kit2 = MotorKit(i2c=board.I2C(), address=0x61)
 
 
 motor_dict = {
-    "rear_main": kit1.stepper1,
-    "front_main": kit1.stepper2,
-    "right_rail": kit2.stepper1,
-    "left_rail": kit2.stepper2,
-    # "arm": kit3.stepper1,
+    "rails" : kit1.stepper1,
+    "main": kit1.stepper2,
+    "arm": kit2.stepper1,
 }
 
 direction_dict = {
-    "front": [("rear_main", -1), ("front_main", 1)],
-    "rear": [("rear_main", 1), ("front_main", -1)],
-    "left": [("left_rail", 1), ("right_rail", -1)],
-    "right": [("right_rail", 1), ("left_rail", -1)],
+    "front": [("main", 1), ("main", 1)],
+    "rear": [("main", -1), ("main", -1)],
+    "right": [("rails", 1), ("rails", 1)],
+    "left": [("rails",-1), ("rails", -1)],
     "up": [("arm", 1)],
     "down": [("arm", -1)],
 }
@@ -102,14 +100,15 @@ def release_all_motors():
 if __name__ == "__main__":
     # Example usage: Move forward 20 cm and right 10 cm simultaneously
     
-    thread1 = threading.Thread(target=move_cm, args=(20, 0.01, [kit1.stepper1], False))
-    thread2 = threading.Thread(target=move_cm, args=(-20, 0.01, [kit1.stepper2], False))
+    thread1 = threading.Thread(target=move_cm, args=(20, 0.01, [kit1.stepper2], False))
+    # thread2 = threading.Thread(target=move_cm, args=(-20, 0.01, [kit1.stepper1, kit1.stepper2], False))
 
     thread1.start()
-    thread2.start()
+    # thread2.start()
 
     thread1.join()
-    thread2.join()
+
+    # thread2.join()
 
     # thread1 = threading.Thread(target=move_cm, args=(20, 0.01, [kit2.stepper1], False))
     # thread2 = threading.Thread(target=move_cm, args=(20, 0.01, [kit2 .stepper2], False))
