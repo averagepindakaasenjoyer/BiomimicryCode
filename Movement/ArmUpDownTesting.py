@@ -38,19 +38,21 @@ kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
 
 motor_dict = {
-    "rear_main": kit1.stepper1,
-    "front_main": kit1.stepper2,
-    "right_rail": kit2.stepper1,
-    "left_rail": kit2.stepper2,
-    'arm': kit2.stepper2},
+    "rails" : kit1.stepper1,
+    "main": kit1.stepper2,
+    "arm": kit2.stepper1,
+}
+
 
 # Motor logical directions (how we treat a "front"/"rear"/"left"/"right" move)
 # Each tuple: (motor_name, direction_multiplier)
 direction_dict = {
-    "front": [("rear_main", -1), ("front_main", 1)],   # forward = rear_main backward, front_main forward
-    "rear":  [("rear_main", 1),  ("front_main", -1)],  # backward
-    "left":  [("left_rail", 1),  ("right_rail", 1)],  # rails move sideways
-    "right": [("right_rail", -1),  ("left_rail", -1)],
+    "front": [("main", 1), ("main", 1)], #moving main rails forward
+    "rear": [("main", -1), ("main", -1)], #moving main rails backward
+    "right": [("rails", 1), ("rails", 1)], #moving top rails to the right
+    "left": [("rails",-1), ("rails", -1)], # moving top rails to the left
+    "up": [("arm", 1)], # moving arm up
+    "down": [("arm", -1)], # moving arm down
 }
 
 # ---------- Motion parameters rails and Big rails ----------
