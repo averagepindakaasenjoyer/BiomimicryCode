@@ -36,6 +36,9 @@ TRAINING_HYP = {
     "dropout": 0.3,          # Enable dropout to prevent overfitting (0.3 is moderate)
 }
 
+# Disable chunked/subprocess training - use simple sequential training instead
+DISABLE_CHUNKED_TRAINING = True
+
 
 def apply_dropout(yolo_model, p):
     """Best-effort: set dropout probability `p` on any existing Dropout modules.
@@ -239,18 +242,23 @@ def run_training_validation(device):
                 ckpt = cand_last
             elif os.path.exists(cand_best):
                 ckpt = cand_best
-        if ckpt is None:
-            print("Warning: could not find checkpoint from freeze stage; continuing with original model instance.")
-            # apply dropout best-effort on original model before unfreezing
-            apply_dropout(model, TRAINING_HYP.get('dropout', 0.0))
-            unfreeze_backbone(model)
-            working_model = model
-        else:
-            print(f"Loading checkpoint for continued training: {ckpt}")
-            working_model = YOLO(ckpt)
-            # try to apply dropout on the freshly loaded checkpoint model
-            apply_dropout(working_model, TRAINING_HYP.get('dropout', 0.0))
-            unfreeze_backbone(working_model)
+        
+        if DISABLE_CHUNKED_TRAINING:
+            # Simple sequential training without chunking/subprocess
+            if ckpt is not None:
+                print(f"Loading checkpoint for continued training: {ckpt}")
+                model = YOLO(ckpt)
+                apply_dropout(model, TRAINING_HYP.get('dropout'))
+            else:
+                apply_dropout(model, TRAINING_HYP.get('dropout'))
+                unfreeze_backbone(model)
+            
+            remaining_epochs = total_epochs - freeze_epochs
+            print(f"Training remaining {remaining_epochs} epochs (unfrozen)...")
+            model.train(epochs=remaining_epochs, **train_common)
+        
+        # Original chunked training logic now disabled - uncomment DISABLE_CHUNKED_TRAINING = False to re-enable
+        """
 
         remaining = total_epochs - freeze_epochs
         best_map = -1.0
@@ -334,9 +342,13 @@ def run_training_validation(device):
                             f"YOLO({repr(rerun_ckpt)}).train(data='data.yaml', epochs={epochs_to_run}, imgsz=640, device={repr(device)}, batch={batch_size}, workers={workers}{aug_args})"
                         )
                     try:
-                        subprocess.run([sys.executable, '-c', code], check=True)
+                        subprocess.run([sys.executable, '-c', code], check=True, capture_output=True, text=True)
                     except subprocess.CalledProcessError as e:
-                        print(f"Subprocess training chunk failed: {e}")
+                        print(f"Subprocess training chunk failed with exit code {e.returncode}")
+                        if e.stdout:
+                            print(f"STDOUT:\n{e.stdout}")
+                        if e.stderr:
+                            print(f"STDERR:\n{e.stderr}")
                         raise
                 else:
                     # Fall back to in-process training if no checkpoint is available
@@ -362,6 +374,7 @@ def run_training_validation(device):
             if no_improve >= early_stop_patience:
                 print("Early stopping: no improvement observed for several chunks. Stopping training.")
                 break
+        """
 
     except RuntimeError as e:
         msg = str(e)

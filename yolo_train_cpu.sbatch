@@ -9,7 +9,7 @@
 
 # HIPSTER CPU-only Training Job Script
 # Submit: sbatch yolo_train_cpu.sbatch
-# Monitor: squeue -u 15178420
+# Monitor: squeue -u $USER
 # Cancel: scancel <job_id>
 # ⚠️ Note: /home has 200GiB limit. Monitor with: quota -s
 
@@ -31,12 +31,15 @@ module load PyYAML/6.0.1-GCCcore-13.2.0
 source ~/envs/yolo-hipster/bin/activate
 
 # Create log directory
-mkdir -p /home/15178420/logs
+mkdir -p /home/$USER/logs
+
+# Project root in home (as observed on HIPSTER: /home/$USER/Biomimicry/BiomimicryCode)
+PROJECT_ROOT="/home/$USER/Biomimicry/BiomimicryCode"
 
 # Stage project to local scratch
 echo "[1/4] Staging project to local scratch..."
 mkdir -p "$TMPDIR/BiomimicryCode"
-rsync -av --delete /home/15178420/BiomimicryCode/ "$TMPDIR/BiomimicryCode/" \
+rsync -av --delete "$PROJECT_ROOT/" "$TMPDIR/BiomimicryCode/" \
   --exclude "runs" --exclude "training_logs" --exclude ".git" \
   || true
 
@@ -56,15 +59,15 @@ echo "[3/4] Starting YOLO training on CPU (32 cores)..."
 python server_train.py --plots --report
 
 # Copy results back to home
-echo "[4/4] Copying results back to /home/15178420..."
-mkdir -p /home/15178420/BiomimicryCode/runs
-mkdir -p /home/15178420/BiomimicryCode/training_logs
-rsync -av runs/ /home/15178420/BiomimicryCode/runs/ || true
-rsync -av training_logs/ /home/15178420/BiomimicryCode/training_logs/ || true
+echo "[4/4] Copying results back to $PROJECT_ROOT..."
+mkdir -p "$PROJECT_ROOT/runs"
+mkdir -p "$PROJECT_ROOT/training_logs"
+rsync -av runs/ "$PROJECT_ROOT/runs/" || true
+rsync -av training_logs/ "$PROJECT_ROOT/training_logs/" || true
 
 echo ""
 echo "Job completed at $(date)"
-echo "Results available at: /home/15178420/BiomimicryCode/runs"
-echo "Logs available at: /home/15178420/BiomimicryCode/training_logs"
+echo "Results available at: $PROJECT_ROOT/runs"
+echo "Logs available at: $PROJECT_ROOT/training_logs"
 echo ""
 echo "Check home quota: quota -s"

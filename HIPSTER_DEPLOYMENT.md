@@ -20,11 +20,11 @@ python -c "import torch, ultralytics, cv2; print('OK')"
 
 ## Data Preparation
 
-Ensure your dataset is copied to `/home/15178420/BiomimicryCode/`:
+Ensure your dataset is copied to `/home/$USER/Biomimicry/BiomimicryCode/`:
 
 ```bash
 # On login node:
-rsync -av ~/BiomimicryCode/ /home/15178420/BiomimicryCode/
+rsync -av ~/BiomimicryCode/ /home/$USER/Biomimicry/BiomimicryCode/
 
 # Verify data.yaml paths are accessible:
 head data.yaml
@@ -32,13 +32,13 @@ head data.yaml
 
 **⚠️ Storage Policy & Quota:**
 - `/home`: **200GiB limit per user** ← *Your code + models + training outputs must fit here*
-- `/scratch/15178420`: 2TiB/user, auto-cleanup after 2 weeks (alternative if you exceed home quota)
+- `/scratch/$USER`: 2TiB/user, auto-cleanup after 2 weeks (alternative if you exceed home quota)
 - `/fnwi_fs/fnwi/hipster`: Long-term bulk data, up to 10TiB/user (request if needed)
 
 **For training in `/home`:**
-- Working directory: `/home/15178420/BiomimicryCode`
+- Working directory: `/home/$USER/Biomimicry/BiomimicryCode`
 - Job scripts stage code+data to `$TMPDIR` (local NVMe, fastest) for training
-- Results rsync back to `/home/15178420/BiomimicryCode` after training completes
+- Results rsync back to `/home/$USER/Biomimicry/BiomimicryCode` after training completes
 - **Monitor quota**: Run `quota -s` on login node to check usage
 - **If quota fills**: Delete old `runs/` directories or move to `/scratch` temporarily
 
@@ -51,15 +51,15 @@ head data.yaml
 sbatch yolo_train_gpu.sbatch
 
 # Monitor:
-squeue -u 15178420
+squeue -u $USER
 
 # Cancel if needed:
 scancel <job_id>
 
 # View output/errors (real-time):
 mkdir -p /home/15178420/logs  # Create logs directory if needed
-tail -f /home/15178420/logs/yolo-gpu-train-<job_id>.out
-tail -f /home/15178420/logs/yolo-gpu-train-<job_id>.err
+tail -f /home/$USER/logs/yolo-gpu-train-<job_id>.out
+tail -f /home/$USER/logs/yolo-gpu-train-<job_id>.err
 ```
 
 **GPU Resources:**
@@ -74,8 +74,8 @@ tail -f /home/15178420/logs/yolo-gpu-train-<job_id>.err
 sbatch yolo_train_cpu.sbatch
 
 # Monitor:
-squeue -u 15178420
-tail -f /home/15178420/logs/yolo-cpu-train-<job_id>.out
+squeue -u $USER
+tail -f /home/$USER/logs/yolo-cpu-train-<job_id>.out
 ```
 
 **CPU Resources:**
@@ -96,7 +96,7 @@ module load Python-bundle-PyPI/2023.10-GCCcore-13.2.0
 module load PyYAML/6.0.1-GCCcore-13.2.0
 
 source ~/envs/yolo-hipster/bin/activate
-cd /home/15178420/BiomimicryCode
+cd /home/$USER/Biomimicry/BiomimicryCode
 python server_train.py --plots
 ```
 
@@ -106,14 +106,14 @@ After job completes:
 
 ```bash
 # Check consolidated results (from login node):
-ls -lh /home/15178420/BiomimicryCode/runs/detect/train*/consolidated_results.csv
-cat /home/15178420/BiomimicryCode/runs/detect/train*/TRAINING_SUMMARY.txt
+ls -lh /home/$USER/Biomimicry/BiomimicryCode/runs/detect/train*/consolidated_results.csv
+cat /home/$USER/Biomimicry/BiomimicryCode/runs/detect/train*/TRAINING_SUMMARY.txt
 
 # Download to local machine (from your Windows machine, PowerShell or bash):
-scp -r <user>@hipster.science.uva.nl:/home/<user>/BiomimicryCode/training_results ./BiomimicryCode_results
+scp -r <user>@hipster.science.uva.nl:/home/<user>/Biomimicry/BiomimicryCode/runs ./BiomimicryCode_results
 
 # Or use rsync for faster incremental transfers:
-rsync -avz --delete <user>@hipster.science.uva.nl:/home/<user>/BiomimicryCode/training_results/ ./BiomimicryCode_results/
+rsync -avz --delete <user>@hipster.science.uva.nl:/home/<user>/Biomimicry/BiomimicryCode/runs/ ./BiomimicryCode_results/
 
 # Or use WinSCP/FileZilla for GUI transfer
 ```
@@ -126,7 +126,7 @@ rsync -avz --delete <user>@hipster.science.uva.nl:/home/<user>/BiomimicryCode/tr
 | Job stuck/timeout | Increase `-t` (time limit) in `.sbatch` script; GPU training with 200 epochs may need 24+ hours |
 | `data.yaml` not found | Verify file is in working directory; use absolute path or relative path from job cwd |
 | Low GPU memory | Reduce `batch_size` in YoloTrain.py (default 8); try 4 or 2 |
-| `/home` quota full (200GiB exceeded) | Delete old `runs/` dirs: `rm -rf /home/15178420/BiomimicryCode/runs/detect/train1`; or move to `/scratch` temporarily: `rsync -av /home/15178420/BiomimicryCode/runs /scratch/15178420/` |
+| `/home` quota full (200GiB exceeded) | Delete old `runs/` dirs: `rm -rf /home/$USER/Biomimicry/BiomimicryCode/runs/detect/train1`; or move to `/scratch` temporarily: `rsync -av /home/$USER/Biomimicry/BiomimicryCode/runs /scratch/$USER/` |
 
 ## Advanced: Custom Resource Allocation
 
@@ -159,7 +159,7 @@ Follow the cluster policy: fractional allocation = 32 cores + 96GB per GPU on pe
 **Quick Start Summary:**
 1. Login to hipster.science.uva.nl
 2. Run `bash setup_env_hipster.sh`
-3. Ensure `/scratch/15178420/BiomimicryCode` has your data and model
+3. Ensure `/home/$USER/Biomimicry/BiomimicryCode` has your data and model
 4. Submit: `sbatch yolo_train_gpu.sbatch` (or cpu variant)
 5. Monitor: `squeue -u 15178420` and tail logs
 6. Download results after job completes
