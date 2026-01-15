@@ -176,7 +176,7 @@ def process_image_once(cap):
         return None
     detected = detect_circle(frame)
     if detected is None:
-        return (0, 0, frame)  # no circle: zero offsets
+        return (None, None, frame)  # no circle: zero offsets
     cx_norm, cy_norm = detected
     h, w = frame.shape[:2]
     cx_px = int(cx_norm * w)
@@ -212,9 +212,9 @@ def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
         # choose 'front' for positive dx_cm (object is right) - this depends on camera/robot alignment
         # Use the direction_dict mapping to split between rear_main and front_main
         if dx_cm > 0:
-            entries = direction_dict["front"]
+            entries = direction_dict["left"]
         else:
-            entries = direction_dict["rear"]
+            entries = direction_dict["right"]
         # For each motor entry: multiplier is +/-1, we compute steps proportional to abs(dx_cm)
         steps_for_cm = abs(dx_cm) * STEPS_PER_CM * scale_move
         for motor_name, multiplier in entries:
@@ -226,9 +226,9 @@ def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
     # rails (Y axis) - typically slide left/right
     if abs(dy_cm) >= 0.5:
         if dy_cm > 0:
-            entries = direction_dict["left"]
+            entries = direction_dict["rear"]
         else:
-            entries = direction_dict["right"]
+            entries = direction_dict["front"]
         steps_for_cm = abs(dy_cm) * STEPS_PER_CM * scale_move
         for motor_name, multiplier in entries:
             motor_steps = int(multiplier * steps_for_cm)
@@ -256,8 +256,16 @@ def convert_depth_to_arm_steps(depth_cm, current_arm_pos_cm= 0.0):
     steps = int(error_cm * STEPS_PER_CM_ARM)
     return steps
 
-
-
+def debug_window(frame, dx, dy):
+            if dx is None or dy is None:
+                dx, dy = 0, 0
+            h, w = frame.shape[:2]
+            cx = w // 2 + int(dx)
+            cy = h // 2 + int(dy)
+            cv2.circle(frame, (cx, cy), 10, (0,255,0), -1)
+            cv2.line(frame, (w//2, h//2), (cx, cy), (255,0,0), 2)
+            cv2.imshow("frame", frame)
+            
 # ---------- Main loop ----------
 def main_loop(camera_index=0, show_debug=False):
     cap = cv2.VideoCapture(camera_index)
@@ -275,7 +283,28 @@ def main_loop(camera_index=0, show_debug=False):
             dx, dy, frame = proc
             # Print debug info
             print(f"dx(pixels)={dx}, dy(pixels)={dy}")
+            if dx is None or dy is None:
+                print("No circle detected → creeping rear")
 
+                # slow, safe backward movement
+                slow_steps = int(0.5 * STEPS_PER_CM)  # ~0.5 cm per cycle
+
+                motor_obj = motor_dict.get("main")
+                if motor_obj is not None:
+                    motor_step_worker(
+                        motor_obj,
+                        slow_steps,          # positive = rear
+                        step_delay=STEP_DELAY * 2  # slower than normal
+                    )
+
+                time.sleep(0.2)
+                if show_debug:
+                    debug_window(frame, dx, dy)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                continue
+            
+            
             # Plan movement
             plan = convert_offsets_to_motor_steps(dx, dy)
             if not plan:
@@ -304,12 +333,7 @@ def main_loop(camera_index=0, show_debug=False):
 
             # Optional visual debug overlay
             if show_debug:
-                h, w = frame.shape[:2]
-                cx = w // 2 + int(dx)
-                cy = h // 2 + int(dy)
-                cv2.circle(frame, (cx, cy), 10, (0,255,0), -1)
-                cv2.line(frame, (w//2, h//2), (cx, cy), (255,0,0), 2)
-                cv2.imshow("frame", frame)
+                debug_window(frame, dx, dy)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
