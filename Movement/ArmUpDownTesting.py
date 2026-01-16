@@ -79,9 +79,42 @@ STEPS_PER_REV_ARM = 200  # Steps per full revolution of the stepper motor
 STEPS_PER_CM_ARM = STEPS_PER_REV_ARM / CIRCUMFERENCE_CM_ARM
 STEP_DELAY_ARM = 0.01
 
+# Class saving the current position of entire arm and found flowers
 
+class RobotPose:
+    def __init__(self):
+        # All units in cm
+        self.x = 0.0      # left / right (rails)
+        self.y = 0.0      # front / rear (main)
+        self.z = 0.0      # arm height
+        self.pollinated_flowers = []  # list of (x, y, z) positions of flowers
 
+        self.lock = threading.Lock()
 
+    def update_xy(self, dx_cm, dy_cm):
+        with self.lock:
+            self.x += dx_cm
+            self.y += dy_cm
+
+    def update_z(self, dz_cm):
+        with self.lock:
+            self.z += dz_cm
+
+    def reset(self):
+        with self.lock:
+            self.x = 0.0
+            self.y = 0.0
+            self.z = 0.0
+
+    def snapshot(self):
+        with self.lock:
+            return (self.x, self.y, self.z)
+    
+    def add_flower(self, x, y, z):
+        with self.lock:
+            self.pollinated_flowers.append((x, y, z))
+    
+        
 
 
 
@@ -273,6 +306,8 @@ def main_loop(camera_index=0, show_debug=False):
         print("Error: cannot open camera index", camera_index)
         return
 
+    robot_pose = RobotPose()  # Initialize pose tracking
+
     try:
         while True:
             proc = process_image_once(cap)
@@ -341,9 +376,13 @@ def main_loop(camera_index=0, show_debug=False):
             for t in threads:
                 t.join()
 
+            # Update robot pose based on movement
+            dx_cm = (dx / PIXELS_PER_CM) * scale_move if dx is not None else 0
+            dy_cm = (dy / PIXELS_PER_CM) * scale_move if dy is not None else 0
+            robot_pose.update_xy(dx_cm, dy_cm)
+
             # short delay to avoid spamming camera & motors
             time.sleep(0.05)
-
 
             # if the arm is above the flower based on the earlier calculations, move the arm up/down
             # For simplicity, we assume a fixed desired depth for now (e.g., 15 cm)
@@ -358,7 +397,15 @@ def main_loop(camera_index=0, show_debug=False):
                 if arm_steps != 0:
                     motor_obj = motor_dict.get("arm")
                     motor_step_worker(motor_obj, arm_steps, STEP_DELAY_ARM)
+                    robot_pose.update_z(desired_depth_cm)  # Move arm down
+                    
+                    # Assume flower pollinated at current position
+                    x, y, z = robot_pose.snapshot()
+                    robot_pose.add_flower(x, y, z)
+                    print(f"Flower pollinated at position: ({x:.2f}, {y:.2f}, {z:.2f})")
+                    
                     motor_step_worker(motor_obj, -arm_steps, STEP_DELAY_ARM)  # move back to original position
+                    robot_pose.update_z(-desired_depth_cm)  # Reset arm height
                     
             
 
@@ -371,6 +418,7 @@ def main_loop(camera_index=0, show_debug=False):
         except Exception:
             pass
         release_all_motors()
+        print(f"Pollinated flowers: {robot_pose.pollinated_flowers}")
 
 
 if __name__ == "__main__":
