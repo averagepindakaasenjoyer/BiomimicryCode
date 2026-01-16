@@ -343,6 +343,7 @@ def main_loop(camera_index=0, show_debug=False):
                     )
 
                 time.sleep(0.2)
+                robot_pose.update_xy(0, 0.5)  # update pose assuming 0.5 cm rear movement
                 if show_debug:
                     debug_window(frame, dx, dy)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
