@@ -90,6 +90,10 @@ class RobotPose:
         self.pollinated_flowers = []  # list of (x, y, z) positions of flowers
 
         self.lock = threading.Lock()
+    
+    def print_pose(self):
+        with self.lock:
+            print(f"Robot Pose - X: {self.x:.2f} cm, Y: {self.y:.2f} cm, Z: {self.z:.2f} cm")
 
     def update_xy(self, dx_cm, dy_cm):
         with self.lock:
@@ -310,6 +314,8 @@ def main_loop(camera_index=0, show_debug=False):
 
     try:
         while True:
+            robot_pose.print_pose()
+            # Capture and process image
             proc = process_image_once(cap)
             if proc is None:
                 print("Camera read failed, retrying...")
@@ -338,7 +344,6 @@ def main_loop(camera_index=0, show_debug=False):
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
                 continue
-            
             
             # Plan movement
             plan = convert_offsets_to_motor_steps(dx, dy)
