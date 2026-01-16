@@ -82,12 +82,16 @@ STEP_DELAY_ARM = 0.01
 # Class saving the current position of entire arm and found flowers
 
 class RobotPose:
-    def __init__(self):
+    def __init__(self, x_limit_cm= 47, y_limit_cm= 15.7, z_limit_cm=45.0):
         # All units in cm
         self.x = 0.0      # left / right (rails)
         self.y = 0.0      # front / rear (main)
         self.z = 0.0      # arm height
         self.pollinated_flowers = []  # list of (x, y, z) positions of flowers
+        self.x_limit_cm = x_limit_cm
+        self.y_limit_cm = y_limit_cm
+        self.z_limit_cm = z_limit_cm
+
 
         self.lock = threading.Lock()
     
@@ -381,10 +385,19 @@ def main_loop(camera_index=0, show_debug=False):
             for t in threads:
                 t.join()
 
-            # Update robot pose based on movement
+            # Update robot pose based on movement (with limit checking)
             dx_cm = (dx / PIXELS_PER_CM) * scale_move if dx is not None else 0
             dy_cm = (dy / PIXELS_PER_CM) * scale_move if dy is not None else 0
-            robot_pose.update_xy(dx_cm, dy_cm)
+            
+            # Check limits before updating
+            current_x, current_y, current_z = robot_pose.snapshot()
+            new_x = current_x + dx_cm
+            new_y = current_y + dy_cm
+            
+            if abs(new_x) <= robot_pose.x_limit_cm and abs(new_y) <= robot_pose.y_limit_cm:
+                robot_pose.update_xy(dx_cm, dy_cm)
+            else:
+                print(f"Movement blocked: would exceed limits. Current: ({current_x:.2f}, {current_y:.2f})")
 
             # short delay to avoid spamming camera & motors
             time.sleep(0.05)
@@ -401,16 +414,24 @@ def main_loop(camera_index=0, show_debug=False):
                 arm_steps = convert_depth_to_arm_steps(desired_depth_cm)
                 if arm_steps != 0:
                     motor_obj = motor_dict.get("arm")
-                    motor_step_worker(motor_obj, arm_steps, STEP_DELAY_ARM)
-                    robot_pose.update_z(desired_depth_cm)  # Move arm down
                     
-                    # Assume flower pollinated at current position
-                    x, y, z = robot_pose.snapshot()
-                    robot_pose.add_flower(x, y, z)
-                    print(f"Flower pollinated at position: ({x:.2f}, {y:.2f}, {z:.2f})")
+                    # Check arm limits before moving
+                    _, _, current_z = robot_pose.snapshot()
+                    new_z = current_z + desired_depth_cm
                     
-                    motor_step_worker(motor_obj, -arm_steps, STEP_DELAY_ARM)  # move back to original position
-                    robot_pose.update_z(-desired_depth_cm)  # Reset arm height
+                    if 0 <= new_z <= 45.0:
+                        motor_step_worker(motor_obj, arm_steps, STEP_DELAY_ARM)
+                        robot_pose.update_z(desired_depth_cm)  # Move arm down
+                        
+                        # Assume flower pollinated at current position
+                        x, y, z = robot_pose.snapshot()
+                        robot_pose.add_flower(x, y, z)
+                        print(f"Flower pollinated at position: ({x:.2f}, {y:.2f}, {z:.2f})")
+                        
+                        motor_step_worker(motor_obj, -arm_steps, STEP_DELAY_ARM)  # move back to original position
+                        robot_pose.update_z(-desired_depth_cm)  # Reset arm height
+                    else:
+                        print(f"Arm movement blocked: would exceed limits. Current Z: {current_z:.2f}")
                     
             
 
