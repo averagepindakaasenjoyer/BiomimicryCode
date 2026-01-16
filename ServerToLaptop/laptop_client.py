@@ -38,9 +38,9 @@ YOLO_CONF = 0.5
 SCALE_FOR_MATCHING = 0.5
 
 # Depth estimation
-MIN_DEPTH = 0.25
-MAX_DEPTH = 2.0
-EXPECTED_DISTANCE = 0.40
+MIN_DEPTH = 0.25  # Original: 0.25
+MAX_DEPTH = 2.0   # Original: 2.0
+EXPECTED_DISTANCE = 0.40  # Original: 0.40 (target working distance in meters)
 
 # Display
 SHOW_DEBUG = True
@@ -129,6 +129,12 @@ def setup_stereo_rectification(w, h, scale):
 
 def compute_stereo_disparity(rectL, rectR, K_L_use):
     """Compute disparity map from rectified stereo pair."""
+    # Validate input shapes
+    if rectL.shape != rectR.shape:
+        print(f"[WARNING] Shape mismatch: rectL={rectL.shape}, rectR={rectR.shape}")
+        return None
+    
+    # Convert to grayscale
     if rectL.ndim == 3:
         rectL_gray = cv2.cvtColor(rectL, cv2.COLOR_BGR2GRAY)
         rectR_gray = cv2.cvtColor(rectR, cv2.COLOR_BGR2GRAY)
@@ -136,29 +142,60 @@ def compute_stereo_disparity(rectL, rectR, K_L_use):
         rectL_gray = rectL
         rectR_gray = rectR
     
+    # Validate grayscale conversion
+    if rectL_gray.dtype != np.uint8:
+        rectL_gray = rectL_gray.astype(np.uint8)
+    if rectR_gray.dtype != np.uint8:
+        rectR_gray = rectR_gray.astype(np.uint8)
+    
+    # Apply CLAHE enhancement
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     rectL_proc = clahe.apply(rectL_gray)
     rectR_proc = clahe.apply(rectR_gray)
     
-    expected_disp = (K_L_use[0, 0] * baseline) / EXPECTED_DISTANCE
-    num_disp = int(np.ceil(expected_disp * 1.8 / 16.0) * 16)
-    num_disp = max(160, min(num_disp, 640))
+    # Calculate numDisparities with validation
+    try:
+        expected_disp = (K_L_use[0, 0] * baseline) / EXPECTED_DISTANCE
+        num_disp = int(np.ceil(expected_disp * 1.8 / 16.0) * 16)
+        # Clamp to safe range (must be multiple of 16)
+        # ORIGINAL RANGE: max(160, min(num_disp, 640)) - caused OutOfMemory error
+        # FIXED RANGE: max(16, min(num_disp, 256)) - safe for real-time processing
+        num_disp = max(16, min(num_disp, 256))
+        # Ensure it's a multiple of 16
+        num_disp = (num_disp // 16) * 16
+        if num_disp < 16:
+            num_disp = 16
+    except Exception as e:
+        print(f"[WARNING] Disparity calculation error: {e}, using default 128")
+        num_disp = 128
+    
+    # Adjust block size based on image resolution
+    h, w = rectL_proc.shape
+    # ORIGINAL: always block_size = 5
+    # FIXED: adaptive - 5 for larger images, 3 for smaller resolution (better for 320x240)
+    block_size = 5 if min(h, w) > 200 else 3
+    
+    print(f"[DEBUG] Disparity params: numDisp={num_disp}, blockSize={block_size}, imgSize={w}x{h}")
     
     stereo_matcher = cv2.StereoSGBM.create(
-        minDisparity=0,
-        numDisparities=num_disp,
-        blockSize=5,
-        P1=8 * 5**2,
-        P2=32 * 5**2,
-        disp12MaxDiff=1,
-        uniquenessRatio=6,
-        speckleWindowSize=80,
-        speckleRange=32,
-        mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY
+        minDisparity=0,  # ORIGINAL: 0
+        numDisparities=num_disp,  # ORIGINAL: max(160, min(num_disp, 640))
+        blockSize=block_size,  # ORIGINAL: always 5 (now adaptive: 3 or 5)
+        P1=8 * block_size**2,  # ORIGINAL: 8 * 5**2 = 200 (now scales with block_size)
+        P2=32 * block_size**2,  # ORIGINAL: 32 * 5**2 = 800 (now scales with block_size)
+        disp12MaxDiff=1,  # ORIGINAL: 1
+        uniquenessRatio=10,  # ORIGINAL: 6 (increased for robustness)
+        speckleWindowSize=100,  # ORIGINAL: 80 (increased slightly)
+        speckleRange=32,  # ORIGINAL: 32
+        mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY  # ORIGINAL: same
     )
     
-    disparity = stereo_matcher.compute(rectL_proc, rectR_proc).astype(np.float32) / 16.0
-    return disparity
+    try:
+        disparity = stereo_matcher.compute(rectL_proc, rectR_proc).astype(np.float32) / 16.0
+        return disparity
+    except Exception as e:
+        print(f"[ERROR] Stereo compute failed: {e}")
+        return None
 
 def compute_depth_map(disparity, Q):
     """Convert disparity to depth map."""
@@ -408,6 +445,12 @@ def main():
             
             # Compute depth
             disparity = compute_stereo_disparity(rectL, rectR, K_L_use)
+            
+            if disparity is None:
+                print(f"[Laptop] Frame {frame_count}: Disparity computation failed, skipping")
+                send_motor_command(client_socket, {})
+                continue
+            
             depth_map = compute_depth_map(disparity, Q)
             
             # Detect flowers on full-res left frame
