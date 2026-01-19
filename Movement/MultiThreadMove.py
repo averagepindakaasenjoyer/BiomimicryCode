@@ -107,10 +107,9 @@ def reset_robot_position():
     thread1 = threading.Thread(target=move_cm, args=(
         -x_limit_cm, 0.02, [kit1.stepper2], False))
     thread2 = threading.Thread(target=move_cm, args=(
-        -y_limit_cm, 0.02, [kit1.stepper1], False
-    ))
+        -y_limit_cm, 0.02, [kit1.stepper1], False))
     thread3 = threading.Thread(target=move_cm, args=(
-        -z_limit_cm, 0.02, [kit2.stepper1], False ))
+        -z_limit_cm, 0.02, [kit2.stepper1], False))
     thread1.start()
     thread2.start()
     thread3.start()
