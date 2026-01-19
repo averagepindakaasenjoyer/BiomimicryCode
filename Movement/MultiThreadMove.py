@@ -28,7 +28,9 @@ diameter_wheel = 2.5 # in cm
 circumference_wheel = diameter_wheel * np.pi
 steps_per_revolution = 200  # Steps per full revolution of the stepper motor 200 is the Nema 17 standard
 steps_per_cm = steps_per_revolution / circumference_wheel
-
+x_limit_cm= 47
+y_limit_cm= 15.7
+z_limit_cm=45.0
 
 
 def move_cm(distance_cm, speed=0.01, motor=[kit1.stepper1]):
@@ -96,6 +98,30 @@ def release_all_motors():
     """
     for motor in motor_dict.values():
         motor.release()
+
+def reset_robot_position():
+    """
+    Reset the robot's position by moving all motors to their initial positions.
+    """
+    
+    thread1 = threading.Thread(target=move_cm, args=(
+        -x_limit_cm, 0.02, [kit1.stepper2], False))
+    thread2 = threading.Thread(target=move_cm, args=(
+        -y_limit_cm, 0.02, [kit1.stepper1], False
+    ))
+    thread3 = threading.Thread(target=move_cm, args=(
+        -z_limit_cm, 0.02, [kit2.stepper1], False ))
+    thread1.start()
+    thread2.start()
+    thread3.start()
+
+    thread1.join()
+    thread2.join()
+    thread3.join()
+
+    release_all_motors()
+    print("Robot position reset complete.")
+
 
 if __name__ == "__main__":
     # Example usage: Move forward 20 cm and right 10 cm simultaneously
