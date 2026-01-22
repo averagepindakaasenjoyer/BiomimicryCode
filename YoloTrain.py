@@ -20,7 +20,9 @@ AUGMENTATION = {
     "mosaic": 1.0,              # Critical for small object detection (flowers)
     "mixup": 0.1,               # Regularization via mixing images
     "translate": 0.15,
-    "scale": 0.25,              # Reduced from 0.5 to preserve small flower objects
+    "scale": 0.6,               # INCREASED: Training at ~5cm, deployment at ~40cm (8x distance)
+                                 # Scale 0.6 = 40-160% size range, simulating 5-40cm+ distances
+                                 # Helps model learn flowers at various scales/distances
     "shear": 5.0,
     "degrees": 15.0,
     "perspective": 0.001,       # Increased from 0.0002 for better robustness
@@ -33,11 +35,11 @@ AUGMENTATION = {
 # Training hyperparameters (weight decay and dropout)
 TRAINING_HYP = {
     "weight_decay": 0.001,   # Increased L2 regularization for better generalization
-    "dropout": 0.3,          # Enable dropout to prevent overfitting (0.3 is moderate)
+    "dropout": 0.2,          # Enable dropout to prevent overfitting (0.2 is moderate)
 }
 
 # Disable chunked/subprocess training - use simple sequential training instead
-DISABLE_CHUNKED_TRAINING = True
+DISABLE_CHUNKED_TRAINING = False
 
 
 def apply_dropout(yolo_model, p):
@@ -164,13 +166,14 @@ def run_training_validation(device):
     model = YOLO('yolo11n.pt')
     print("Starting training...")
 
-    # Recommended safe defaults to avoid DataLoader / memory issues on small machines:
-    batch_size = 8
-    workers = 2
+    # GPU-optimized settings for NVIDIA RTX 6000 Ada (48GB VRAM, 32 cores on HIPSTER)
+    # For smaller GPUs or memory issues, reduce batch_size to 16 or 8
+    batch_size = 32
+    workers = 8
 
     # two-stage training params
     freeze_epochs = 10         # Increased from 2 for better backbone stabilization
-    total_epochs = 200         # Reduced from 1000 (flowers are simple; early stopping will kick in)
+    total_epochs = 1000         # Reduced from 1000 (flowers are simple; early stopping will kick in)
     early_stop_patience = 7    # Increased from 3 (was too aggressive: ~35 epochs before stopping)
     chunk_size = 10            # Increased from 5 for more stable training
 
@@ -233,6 +236,9 @@ def run_training_validation(device):
         # the same YOLO instance.
         print("Preparing to continue training from checkpoint saved after freeze stage...")
         run_dir_after_freeze = latest_train_run_dir()
+        freeze_stage_dir = run_dir_after_freeze  # Save for chunk result consolidation
+        if freeze_stage_dir is None:
+            print("[WARNING] Could not find freeze stage directory - chunk consolidation may fail")
         ckpt = None
         if run_dir_after_freeze is not None:
             # look for last.pt or best.pt
@@ -258,123 +264,199 @@ def run_training_validation(device):
             model.train(epochs=remaining_epochs, **train_common)
         
         # Original chunked training logic now disabled - uncomment DISABLE_CHUNKED_TRAINING = False to re-enable
-        """
-
-        remaining = total_epochs - freeze_epochs
-        best_map = -1.0
-        no_improve = 0
-        for start in range(0, remaining, chunk_size):
-            epochs_to_run = min(chunk_size, remaining - start)
-            print(f"Training next chunk of {epochs_to_run} epochs (progress {start + freeze_epochs}/{total_epochs})...")
-            # Run chunked training in a fresh Python process using the latest checkpoint (if available).
-            # This avoids Ultralytics internal state issues when calling train() repeatedly in the same process.
-            rerun_ckpt_dir = latest_train_run_dir()
-            rerun_ckpt = None
-            if rerun_ckpt_dir:
-                candidate = os.path.join(rerun_ckpt_dir, 'weights', 'last.pt')
-                if os.path.exists(candidate):
-                    rerun_ckpt = candidate
-                else:
-                    candidate_best = os.path.join(rerun_ckpt_dir, 'weights', 'best.pt')
-                    if os.path.exists(candidate_best):
-                        rerun_ckpt = candidate_best
-
-                if rerun_ckpt is not None:
-                    print(f"Launching subprocess training chunk from checkpoint: {rerun_ckpt}")
-                    aug_args = ''
-                    if AUGMENTATION.get('enable'):
-                        aug_args += f", augment={repr(True)}"
-                        if 'mosaic' in AUGMENTATION:
-                            aug_args += f", mosaic={repr(AUGMENTATION['mosaic'])}"
-                        if 'mixup' in AUGMENTATION:
-                            aug_args += f", mixup={repr(AUGMENTATION['mixup'])}"
-                        if 'translate' in AUGMENTATION:
-                            aug_args += f", translate={repr(AUGMENTATION['translate'])}"
-                        if 'scale' in AUGMENTATION:
-                            aug_args += f", scale={repr(AUGMENTATION['scale'])}"
-                        if 'shear' in AUGMENTATION:
-                            aug_args += f", shear={repr(AUGMENTATION['shear'])}"
-                        if 'degrees' in AUGMENTATION:
-                            aug_args += f", degrees={repr(AUGMENTATION['degrees'])}"
-                        if 'perspective' in AUGMENTATION:
-                            aug_args += f", perspective={repr(AUGMENTATION['perspective'])}"
-                        if 'erasing' in AUGMENTATION:
-                            aug_args += f", erasing={repr(AUGMENTATION['erasing'])}"
-                        if 'hsv_h' in AUGMENTATION:
-                            aug_args += f", hsv_h={repr(AUGMENTATION['hsv_h'])}"
-                        if 'hsv_s' in AUGMENTATION:
-                            aug_args += f", hsv_s={repr(AUGMENTATION['hsv_s'])}"
-                        if 'hsv_v' in AUGMENTATION:
-                            aug_args += f", hsv_v={repr(AUGMENTATION['hsv_v'])}"
-
-                    # add weight_decay and warmup parameters to subprocess args
-                    aug_args += f", weight_decay={repr(TRAINING_HYP.get('weight_decay', 0.0))}"
-                    aug_args += f", warmup_epochs=5.0, warmup_bias_lr=0.1, label_smoothing=0.1, patience=7"
-
-                    # If dropout is requested, attempt to set existing Dropout modules in the subprocess model instance.
-                    # We craft a compact one-line snippet that loads the checkpoint, sets dropout on any Dropout modules,
-                    # prints how many were changed, and then calls .train(). This uses a generator-setattr trick to avoid
-                    # multi-line for-loops in a -c single-line invocation.
-                    code_prefix = ""
-                    dropout_val = TRAINING_HYP.get('dropout', 0.0)
-                    if dropout_val and dropout_val > 0.0:
-                        # Note: this uses getattr(m, 'model') to access internal modules; it is best-effort.
-                        # It sets .p on any Dropout/Dropout2d/Dropout3d instances found.
-                        code_prefix = (
-                            "import torch;import torch.nn as nn;"
-                            f"m=YOLO({repr(rerun_ckpt)});mods=getattr(m,'model',None);"
-                            "changed=0;"
-                            "if mods is not None:"
-                            f" changed=sum(1 for mm in mods.modules() if isinstance(mm,(nn.Dropout,nn.Dropout2d,nn.Dropout3d)) and (setattr(mm,'p',{repr(dropout_val)}) or True));"
-                            "print('Dropout modules changed:',changed);"
-                        )
-
-
-                    # Build the final command: either a prefixed/dropout-applier then call train on the model instance
-                    if code_prefix:
-                        code = (
-                            f"from ultralytics import YOLO;{code_prefix}"
-                            f"m.train(data='data.yaml', epochs={epochs_to_run}, imgsz=640, device={repr(device)}, batch={batch_size}, workers={workers}{aug_args})"
-                        )
+        else:
+            # Chunked training: prepare model before starting chunks
+            if ckpt is not None:
+                print(f"Loading checkpoint for chunked training: {ckpt}")
+                model = YOLO(ckpt)
+                apply_dropout(model, TRAINING_HYP.get('dropout'))
+            else:
+                apply_dropout(model, TRAINING_HYP.get('dropout'))
+                unfreeze_backbone(model)
+            
+            remaining = total_epochs - freeze_epochs
+            best_map = -1.0
+            no_improve = 0
+            chunk_num = 0
+            cumulative_epochs = freeze_epochs  # Track total epochs completed so far
+            for start in range(0, remaining, chunk_size):
+                epochs_to_run = min(chunk_size, remaining - start)
+                chunk_num += 1
+                cumulative_epochs += epochs_to_run  # Update target epoch count
+                print(f"Training next chunk of {epochs_to_run} epochs (progress {start + freeze_epochs}/{total_epochs}, target epoch: {cumulative_epochs})...")
+                # Run chunked training in a fresh Python process using the latest checkpoint (if available).
+                # This avoids Ultralytics internal state issues when calling train() repeatedly in the same process.
+                rerun_ckpt_dir = latest_train_run_dir()
+                rerun_ckpt = None
+                if rerun_ckpt_dir:
+                    candidate = os.path.join(rerun_ckpt_dir, 'weights', 'last.pt')
+                    if os.path.exists(candidate):
+                        rerun_ckpt = candidate
                     else:
+                        candidate_best = os.path.join(rerun_ckpt_dir, 'weights', 'best.pt')
+                        if os.path.exists(candidate_best):
+                            rerun_ckpt = candidate_best
+
+                    if rerun_ckpt is not None:
+                        print(f"Launching subprocess training chunk from checkpoint: {rerun_ckpt}")
+                        aug_args = ''
+                        if AUGMENTATION.get('enable'):
+                            aug_args += f", augment={repr(True)}"
+                            if 'mosaic' in AUGMENTATION:
+                                aug_args += f", mosaic={repr(AUGMENTATION['mosaic'])}"
+                            if 'mixup' in AUGMENTATION:
+                                aug_args += f", mixup={repr(AUGMENTATION['mixup'])}"
+                            if 'translate' in AUGMENTATION:
+                                aug_args += f", translate={repr(AUGMENTATION['translate'])}"
+                            if 'scale' in AUGMENTATION:
+                                aug_args += f", scale={repr(AUGMENTATION['scale'])}"
+                            if 'shear' in AUGMENTATION:
+                                aug_args += f", shear={repr(AUGMENTATION['shear'])}"
+                            if 'degrees' in AUGMENTATION:
+                                aug_args += f", degrees={repr(AUGMENTATION['degrees'])}"
+                            if 'perspective' in AUGMENTATION:
+                                aug_args += f", perspective={repr(AUGMENTATION['perspective'])}"
+                            if 'erasing' in AUGMENTATION:
+                                aug_args += f", erasing={repr(AUGMENTATION['erasing'])}"
+                            if 'hsv_h' in AUGMENTATION:
+                                aug_args += f", hsv_h={repr(AUGMENTATION['hsv_h'])}"
+                            if 'hsv_s' in AUGMENTATION:
+                                aug_args += f", hsv_s={repr(AUGMENTATION['hsv_s'])}"
+                            if 'hsv_v' in AUGMENTATION:
+                                aug_args += f", hsv_v={repr(AUGMENTATION['hsv_v'])}"
+
+                        # add weight_decay to subprocess args
+                        # Note: NO warmup for chunks - we want LR to continue from previous chunk
+                        # Only the freeze stage uses warmup_epochs=5.0 above
+                        aug_args += f", weight_decay={repr(TRAINING_HYP.get('weight_decay', 0.0))}"
+                        aug_args += f", warmup_epochs=0, label_smoothing=0.1, patience=10"
+                        
+                        # Read the last learning rate from previous chunk to continue the schedule
+                        # This is much better than calculating it - uses the actual LR that was used
+                        last_lr = parse_lr_from_results_csv(rerun_ckpt_dir)
+                        if last_lr is not None:
+                            current_lr0 = last_lr
+                            print(f"Continuing from previous LR: {current_lr0:.6f}")
+                        else:
+                            # Fallback: start with a reasonable default for later chunks
+                            current_lr0 = 0.001
+                            print(f"Could not read previous LR, using fallback: {current_lr0:.6f}")
+                        aug_args += f", lr0={current_lr0}, lrf=0.01"
+
+                        # Simplified subprocess training - remove dropout modification as it causes issues
+                        # Dropout should already be in the checkpoint from the initial training phase
+                        # Don't use resume=True - we want separate directories per chunk for tracking
+                        # Instead, continue LR schedule by reading from previous chunk's CSV
                         code = (
                             f"from ultralytics import YOLO;"
-                            f"YOLO({repr(rerun_ckpt)}).train(data='data.yaml', epochs={epochs_to_run}, imgsz=640, device={repr(device)}, batch={batch_size}, workers={workers}{aug_args})"
+                            f"YOLO({repr(rerun_ckpt)}).train(data='data.yaml', epochs={epochs_to_run}, "
+                            f"imgsz=640, device={repr(device)}, batch={batch_size}, workers={workers}{aug_args})"
                         )
-                    try:
-                        subprocess.run([sys.executable, '-c', code], check=True, capture_output=True, text=True)
-                    except subprocess.CalledProcessError as e:
-                        print(f"Subprocess training chunk failed with exit code {e.returncode}")
-                        if e.stdout:
-                            print(f"STDOUT:\n{e.stdout}")
-                        if e.stderr:
-                            print(f"STDERR:\n{e.stderr}")
-                        raise
-                else:
-                    # Fall back to in-process training if no checkpoint is available
-                    working_model.train(epochs=epochs_to_run, **train_common)
-
-            # after chunk, parse latest results.csv and check mAP50
-            run_dir = latest_train_run_dir()
-            if run_dir is None:
-                print("Warning: could not find training run results to evaluate early stopping.")
-            else:
-                map50, map5095 = parse_map_from_results_csv(run_dir)
-                if map50 is not None:
-                    print(f"Chunk results: mAP50={map50:.4f}, mAP50-95={map5095:.4f}")
-                    if map50 > best_map:
-                        best_map = map50
-                        no_improve = 0
+                        
+                        # Track the training directory BEFORE subprocess
+                        run_dir_before = latest_train_run_dir()
+                        
+                        try:
+                            # Don't capture output so we can see real-time progress and actual errors
+                            result = subprocess.run([sys.executable, '-c', code], check=True)
+                            
+                            # Verify a new train directory was created
+                            run_dir_after = latest_train_run_dir()
+                            if run_dir_after == run_dir_before:
+                                print(f"[WARNING] Chunk {chunk_num}: Subprocess completed but no new training directory created!")
+                                print(f"  Before: {run_dir_before}")
+                                print(f"  After: {run_dir_after}")
+                                print(f"  This suggests training may not have actually occurred.")
+                            
+                            print(f"✓ Chunk {chunk_num} training completed successfully")
+                        except subprocess.CalledProcessError as e:
+                            print(f"✗ Subprocess training chunk {chunk_num} failed with exit code {e.returncode}")
+                            print(f"Command: {code}")
+                            print("Stopping chunked training due to subprocess failure")
+                            break  # Stop training but don't crash - we have partial results
                     else:
-                        no_improve += 1
-                        print(f"No improvement count: {no_improve}/{early_stop_patience}")
+                        print(f"[ERROR] No checkpoint found for subprocess chunk {chunk_num}")
+                        print(f"  Candidates checked: {rerun_ckpt_dir}")
+                        print(f"  Expected: {os.path.join(rerun_ckpt_dir, 'weights', 'last.pt') if rerun_ckpt_dir else 'N/A'}")
+                        print("Stopping chunked training due to missing checkpoint")
+                        break
                 else:
-                    print("Could not read mAP from results.csv for this chunk.")
+                    # No checkpoint from latest run - reload from initial checkpoint or use prepared model
+                    # This fallback should rarely happen (only on first chunk if subprocess fails)
+                    print("No checkpoint found for subprocess, using in-process training for this chunk")
+                    latest_ckpt = None
+                    run_dir = latest_train_run_dir()
+                    if run_dir:
+                        cand = os.path.join(run_dir, 'weights', 'last.pt')
+                        if os.path.exists(cand):
+                            latest_ckpt = cand
+                    
+                    if latest_ckpt:
+                        print(f"Loading {latest_ckpt} for in-process training")
+                        chunk_model = YOLO(latest_ckpt)
+                    elif ckpt:
+                        print(f"Loading initial checkpoint {ckpt} for in-process training")
+                        chunk_model = YOLO(ckpt)
+                    else:
+                        print("ERROR: No checkpoint available for chunk training - cannot continue")
+                        break
+                    
+                    # Train in-process with cumulative epoch target
+                    try:
+                        # Read LR from previous chunk's results
+                        last_lr = parse_lr_from_results_csv(run_dir) if run_dir else None
+                        if last_lr is not None:
+                            current_lr0 = last_lr
+                            print(f"Continuing from previous LR: {current_lr0:.6f}")
+                        else:
+                            current_lr0 = 0.001
+                            print(f"Could not read previous LR, using fallback: {current_lr0:.6f}")
+                        
+                        print(f"Training in-process (target: {epochs_to_run} epochs, lr0={current_lr0:.6f})...")
+                        # Use a copy of train_common but override warmup for chunks
+                        chunk_train_params = {**train_common, 'lr0': current_lr0, 'lrf': 0.01, 'warmup_epochs': 0}
+                        chunk_model.train(epochs=epochs_to_run, **chunk_train_params)
+                        print(f"✓ Chunk {chunk_num} in-process training completed")
+                    except Exception as e:
+                        print(f"✗ In-process chunk training failed: {e}")
+                        break
 
-            if no_improve >= early_stop_patience:
-                print("Early stopping: no improvement observed for several chunks. Stopping training.")
-                break
-        """
+                # after chunk, parse latest results.csv and check mAP50
+                run_dir = latest_train_run_dir()
+                if run_dir is None:
+                    print("Warning: could not find training run results to evaluate early stopping.")
+                else:
+                    map50, map5095 = parse_map_from_results_csv(run_dir)
+                    if map50 is not None:
+                        print(f"Chunk results: mAP50={map50:.4f}, mAP50-95={map5095:.4f}")
+                        
+                        # Copy results.csv to freeze_stage_dir with chunk number for consolidation
+                        src_csv = os.path.join(run_dir, 'results.csv')
+                        if freeze_stage_dir and os.path.exists(src_csv):
+                            try:
+                                dst_csv = os.path.join(freeze_stage_dir, f'results_chunk_{chunk_num:02d}.csv')
+                                import shutil
+                                shutil.copy(src_csv, dst_csv)
+                                print(f"Saved chunk results to {dst_csv}")
+                            except Exception as e:
+                                print(f"[WARNING] Failed to copy chunk results: {e}")
+                        elif not freeze_stage_dir:
+                            print("[WARNING] freeze_stage_dir not set - chunk results not saved for consolidation")
+                        
+                        # Early stopping logic: check if mAP improved
+                        if map50 > best_map:
+                            best_map = map50
+                            no_improve = 0
+                            print(f"New best mAP50: {best_map:.4f} (improvement from previous best)")
+                        else:
+                            no_improve += 1
+                            print(f"No improvement count: {no_improve}/{early_stop_patience} (best mAP50 so far: {best_map:.4f})")
+                    else:
+                        print("Could not read mAP from results.csv for this chunk.")
+
+                if no_improve >= early_stop_patience:
+                    print("Early stopping: no improvement observed for several chunks. Stopping training.")
+                    break
 
     except RuntimeError as e:
         msg = str(e)
@@ -449,30 +531,61 @@ def latest_train_run_dir():
     """Find the most recent training run directory produced by Ultralyics.
     Searches common locations: runs/train/*, runs/detect/*, and runs/*/train*.
     Returns the most recently modified directory path or None if none found."""
+    
+    # Debug: show current working directory
+    cwd = os.getcwd()
+    print(f"[DEBUG] Current working directory: {cwd}")
+    
+    # Look specifically for training runs, not validation runs
     search_patterns = [
-        os.path.join('runs', 'train', '*'),
-        os.path.join('runs', 'detect', '*'),
-        os.path.join('runs', '*', 'train*'),
-        os.path.join('runs', '*', 'exp*'),
-        os.path.join('runs', '*', '*train*'),
+        os.path.join('runs', 'detect', 'train*'),  # runs/detect/train, train2, train3, etc.
+        os.path.join('runs', 'train', '*'),        # runs/train/*
     ]
     candidates = []
     for pat in search_patterns:
-        for p in glob.glob(pat):
+        matches = glob.glob(pat)
+        print(f"[DEBUG] Pattern '{pat}' matched {len(matches)} directories")
+        for p in matches:
             if os.path.isdir(p):
-                candidates.append(p)
-
-    # also consider any directory directly under runs that looks like a training run
-    for p in glob.glob(os.path.join('runs', '*')):
-        if os.path.isdir(p) and ('train' in os.path.basename(p).lower() or 'exp' in os.path.basename(p).lower() or 'detect' in os.path.basename(p).lower()):
-            candidates.append(p)
+                # Exclude validation directories
+                basename = os.path.basename(p)
+                if 'val' not in basename.lower() and 'predict' not in basename.lower():
+                    candidates.append(p)
+                    print(f"[DEBUG]   Added candidate: {p}")
 
     # deduplicate
     candidates = sorted(list(dict.fromkeys(candidates)))
+    print(f"[DEBUG] Found {len(candidates)} candidate directories (after filtering)")
     if not candidates:
+        print("[DEBUG] No training run directories found")
         return None
-    candidates.sort(key=os.path.getmtime, reverse=True)
-    return candidates[0]
+    
+    # Sort by directory number (train -> 0, train2 -> 2, train37 -> 37, etc.)
+    # This ensures we get the highest-numbered (most recent) training run
+    def extract_train_number(path):
+        basename = os.path.basename(path)
+        # Extract number from 'train', 'train2', 'train37', etc.
+        if basename == 'train':
+            return 0
+        elif basename.startswith('train'):
+            try:
+                return int(basename[5:])  # 'train37' -> 37
+            except ValueError:
+                return -1
+        return -1
+    
+    candidates.sort(key=extract_train_number, reverse=True)
+    latest = candidates[0]
+    print(f"[DEBUG] Latest training run directory (by number): {latest}")
+    
+    # Verify it has weights folder
+    weights_dir = os.path.join(latest, 'weights')
+    if os.path.exists(weights_dir):
+        print(f"[DEBUG] Confirmed weights directory exists: {weights_dir}")
+    else:
+        print(f"[DEBUG] WARNING: No weights directory in {latest}")
+    
+    return latest
 
 
 def parse_map_from_results_csv(run_dir):
@@ -509,6 +622,36 @@ def parse_map_from_results_csv(run_dir):
     except Exception as e:
         print(f"Error parsing results.csv: {e}")
         return None, None
+
+
+def parse_lr_from_results_csv(run_dir):
+    """Read the last learning rate from results.csv.
+    Returns the lr/pg0 value (primary learning rate) from the last epoch, or None if not found."""
+    csv_path = os.path.join(run_dir, 'results.csv')
+    if not os.path.exists(csv_path):
+        return None
+    try:
+        with open(csv_path, newline='') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+            if len(rows) < 2:
+                return None
+            header = rows[0]
+            last = rows[-1]
+            # Look for lr/pg0, lr/pg1, or similar learning rate columns
+            lr_idx = None
+            for i, col in enumerate(header):
+                col_clean = col.strip().lower()
+                if 'lr/pg0' in col_clean or col_clean == 'lr' or 'learning_rate' in col_clean:
+                    lr_idx = i
+                    break
+            if lr_idx is not None:
+                lr_val = float(last[lr_idx])
+                return lr_val
+            return None
+    except Exception as e:
+        print(f"Error parsing learning rate from results.csv: {e}")
+        return None
 
 
 def plot_map_progress(run_dir, save_path=None):

@@ -45,43 +45,56 @@ def find_latest_train_run():
 
 def collect_chunk_results(run_dir):
     """
-    Collect all results.csv files from a training run directory.
+    Collect all results.csv files from a training run directory and sibling directories.
+    
+    For chunked training, subprocess runs create separate train* directories.
+    This function looks in:
+    1. The specified run_dir (freeze stage, often train19)
+    2. Sibling train* directories at the same level (chunks from subprocesses)
+    3. results_chunk_*.csv files within run_dir
     
     Returns:
       dict: {
-        'chunk_files': [(epoch_start, results_csv_path), ...],
+        'chunk_files': [results_csv_path, ...],
         'weights_dirs': [weight_dir_paths],
-        'total_epochs_computed': int
+        'total_chunks': int
       }
     """
     chunk_results = []
     weights_dirs = []
     
-    # Look for results.csv in common Ultralytics output locations
-    search_paths = [
-        run_dir,  # direct
-        os.path.join(run_dir, 'weights'),
-        os.path.join(run_dir, '..'),
-    ]
+    # First, look for results_chunk_*.csv files in the main run_dir (new chunk naming convention)
+    chunk_csv_files = sorted(glob.glob(os.path.join(run_dir, 'results_chunk_*.csv')))
+    chunk_results.extend(chunk_csv_files)
     
-    # Also check subdirectories (chunk-specific runs)
-    search_paths.extend(glob.glob(os.path.join(run_dir, '**', 'results.csv'), recursive=True))
+    if chunk_csv_files:
+        print(f"Found {len(chunk_csv_files)} chunk result files (results_chunk_*.csv) in {run_dir}")
     
-    for search_base in search_paths:
-        if os.path.isfile(search_base) and search_base.endswith('results.csv'):
-            # Direct file path from recursive search
-            chunk_results.append(search_base)
-        elif os.path.isdir(search_base):
-            csv_path = os.path.join(search_base, 'results.csv')
-            if os.path.exists(csv_path):
-                chunk_results.append(csv_path)
+    # Also look for results.csv in the main run_dir itself
+    main_results_csv = os.path.join(run_dir, 'results.csv')
+    if os.path.exists(main_results_csv) and main_results_csv not in chunk_results:
+        chunk_results.append(main_results_csv)
+    
+    # If no chunk files found in run_dir, search sibling train* directories (for backward compatibility)
+    if not chunk_csv_files:
+        parent_dir = os.path.dirname(run_dir)
+        if os.path.isdir(parent_dir):
+            # Find all train* directories at the same level
+            sibling_trains = sorted(glob.glob(os.path.join(parent_dir, 'train*')))
+            for sibling in sibling_trains:
+                sibling_results = os.path.join(sibling, 'results.csv')
+                if os.path.exists(sibling_results):
+                    chunk_results.append(sibling_results)
+            
+            if sibling_trains:
+                print(f"Found {len(sibling_trains)} sibling train* directories, collecting results.csv from each")
     
     # Look for weights directories (track training state)
     for pattern in [os.path.join(run_dir, '*/weights'), os.path.join(run_dir, 'weights')]:
         weights_dirs.extend(glob.glob(pattern))
     
-    # Deduplicate and sort by modification time
-    chunk_results = sorted(list(set(chunk_results)), key=os.path.getmtime)
+    # Sort by modification time (maintains chunk order)
+    chunk_results = sorted(list(set(chunk_results)), key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
     
     return {
         'chunk_files': chunk_results,
@@ -106,6 +119,11 @@ def consolidate_results(chunk_files):
     """
     Merge results from multiple chunk CSV files into a single consolidated result.
     
+    Each chunk's results.csv has epoch numbers starting from 1. This function:
+    1. Reads all chunks
+    2. Adjusts epoch column to be sequential across chunks (1-10, 11-20, 21-30, etc.)
+    3. Merges into single consolidated result
+    
     Returns:
       (header, all_rows, chunk_boundaries)
     """
@@ -113,6 +131,7 @@ def consolidate_results(chunk_files):
     header = None
     chunk_boundaries = {}  # {chunk_index: (start_epoch, end_epoch)}
     epoch_offset = 0
+    epoch_col_idx = None
     
     for chunk_idx, csv_path in enumerate(chunk_files):
         h, rows = read_csv_rows(csv_path)
@@ -123,13 +142,34 @@ def consolidate_results(chunk_files):
         
         if header is None:
             header = h
+            # Find epoch column index (first column is typically epoch)
+            for i, col_name in enumerate(header):
+                if col_name.lower() in ['epoch', ' epoch', 'ep']:
+                    epoch_col_idx = i
+                    break
+            # Fallback: assume first column is epoch if not found
+            if epoch_col_idx is None:
+                epoch_col_idx = 0
+        
+        # Adjust epoch numbers in this chunk
+        adjusted_rows = []
+        for row in rows:
+            adjusted_row = list(row)  # Make a copy
+            if epoch_col_idx is not None and epoch_col_idx < len(adjusted_row):
+                try:
+                    original_epoch = int(float(adjusted_row[epoch_col_idx]))
+                    new_epoch = epoch_offset + original_epoch
+                    adjusted_row[epoch_col_idx] = str(new_epoch)
+                except (ValueError, IndexError):
+                    pass  # If can't parse epoch, leave it as-is
+            adjusted_rows.append(adjusted_row)
         
         # Track where this chunk starts and ends
         start_epoch = epoch_offset + 1
         end_epoch = epoch_offset + len(rows)
         chunk_boundaries[chunk_idx] = (start_epoch, end_epoch)
         
-        all_rows.extend(rows)
+        all_rows.extend(adjusted_rows)
         epoch_offset = end_epoch
         
         print(f"[OK] Chunk {chunk_idx}: {csv_path} ({len(rows)} rows, epochs {start_epoch}-{end_epoch})")

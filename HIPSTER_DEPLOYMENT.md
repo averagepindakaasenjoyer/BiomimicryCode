@@ -1,5 +1,13 @@
 # HIPSTER Cluster Deployment Guide for YOLO Training
 
+**Quick Start Summary:**
+1. Login to hipster.science.uva.nl
+2. Run `bash setup_env_hipster.sh`
+3. Ensure `/home/$USER/Biomimicry/BiomimicryCode` has your data and model
+4. Submit: `sbatch yolo_train_gpu.sbatch` (or cpu variant)
+5. Monitor: `squeue -u 15178420` and tail logs
+6. Download results after job completes
+
 ## Environment Setup (One-Time on Login Node)
 
 Run this once to install ultralytics and torch in a venv:
@@ -154,12 +162,3 @@ Follow the cluster policy: fractional allocation = 32 cores + 96GB per GPU on pe
 - Clean up `/scratch` after training; data auto-removes after 2 weeks
 - For publications mentioning HIPSTER, acknowledge the facility to justify continued investment
 
----
-
-**Quick Start Summary:**
-1. Login to hipster.science.uva.nl
-2. Run `bash setup_env_hipster.sh`
-3. Ensure `/home/$USER/Biomimicry/BiomimicryCode` has your data and model
-4. Submit: `sbatch yolo_train_gpu.sbatch` (or cpu variant)
-5. Monitor: `squeue -u 15178420` and tail logs
-6. Download results after job completes

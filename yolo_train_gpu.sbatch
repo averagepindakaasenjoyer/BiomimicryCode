@@ -35,6 +35,16 @@ mkdir -p /home/$USER/logs
 # Project root in home (as observed on HIPSTER: /home/$USER/Biomimicry/BiomimicryCode)
 PROJECT_ROOT="/home/$USER/Biomimicry/BiomimicryCode"
 
+# Clean up old runs to avoid confusion and save quota space
+echo "[0/4] Cleaning up old training runs from previous sessions..."
+if [ -d "$PROJECT_ROOT/runs" ]; then
+  echo "  Removing old runs directory..."
+  rm -rf "$PROJECT_ROOT/runs"
+  echo "  Old runs removed"
+else
+  echo "  No old runs to remove"
+fi
+
 # Stage project to fast local scratch (NVMe)
 echo "[1/4] Staging project to local scratch..."
 mkdir -p "$TMPDIR/BiomimicryCode"
@@ -60,6 +70,13 @@ else
   echo "WARNING: No Combined_Dataset found in $BIOMIMICRY_ROOT"
   echo "Available directories:"
   ls -la "$BIOMIMICRY_ROOT" | grep -i dataset || echo "  (none found)"
+fi
+
+# Clean any old runs in local scratch from previous jobs
+echo "[1.75/4] Cleaning old runs in local scratch..."
+if [ -d "$TMPDIR/BiomimicryCode/runs" ]; then
+  rm -rf "$TMPDIR/BiomimicryCode/runs"
+  echo "  Removed old runs from local scratch"
 fi
 
 cd "$TMPDIR/BiomimicryCode"

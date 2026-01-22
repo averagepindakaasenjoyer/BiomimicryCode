@@ -22,7 +22,7 @@ import time
 # =============================
 # Network Configuration
 # =============================
-PI_IP = "145.109.28.13"  # Replace with your Pi's IP
+PI_IP = "145.109.40.215"  # Replace with your Pi's IP
 PORT = 8000
 
 # =============================

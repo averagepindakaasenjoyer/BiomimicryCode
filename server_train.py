@@ -55,6 +55,18 @@ def main():
     logger.info(f"Plots: {args.plots}")
     logger.info("")
     
+    # Clean up old runs directory to ensure fresh training
+    logger.info("Cleaning up old training runs...")
+    runs_dir = "runs"
+    if os.path.exists(runs_dir):
+        import shutil
+        try:
+            shutil.rmtree(runs_dir)
+            logger.info(f"  Removed old {runs_dir}/ directory")
+        except Exception as e:
+            logger.warning(f"  Failed to remove {runs_dir}: {e}")
+    logger.info("")
+    
     # Import training module
     try:
         from YoloTrain import check_device, run_training_validation
