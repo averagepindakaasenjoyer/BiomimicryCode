@@ -32,6 +32,8 @@ from adafruit_motor import stepper
 from adafruit_motorkit import MotorKit
 import sys
 import signal
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 # ---------- Hardware setup ----------
 kit1 = MotorKit(i2c=board.I2C(), address=0x60)
@@ -82,7 +84,7 @@ STEP_DELAY_ARM = 0.01
 # Class saving the current position of entire arm and found flowers
 
 class RobotPose:
-    def __init__(self, x_limit_cm= 47, y_limit_cm= 15.7, z_limit_cm=45.0):
+    def __init__(self, x_limit_cm= 47, y_limit_cm= 15.7, z_limit_cm=45.0, size_robot_X= 20.0, size_robot_Y=10.0):
         # All units in cm
         self.x = 0.0      # left / right (rails)
         self.y = 0.0      # front / rear (main)
@@ -91,7 +93,8 @@ class RobotPose:
         self.x_limit_cm = x_limit_cm
         self.y_limit_cm = y_limit_cm
         self.z_limit_cm = z_limit_cm
-
+        self.size_robot_X = size_robot_X
+        self.size_robot_Y = size_robot_Y
 
         self.lock = threading.Lock()
     
@@ -121,8 +124,26 @@ class RobotPose:
     def add_flower(self, x, y, z):
         with self.lock:
             self.pollinated_flowers.append((x, y, z))
-    
-        
+    def plot_robot_and_flowers(self):
+
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Plot robot position
+        ax.scatter(self.x, self.y, self.z, c='r', marker='o', s=100, label='Robot Position')
+
+        # Plot pollinated flowers
+        if self.pollinated_flowers:
+            fx, fy, fz = zip(*self.pollinated_flowers)
+            ax.scatter(fx, fy, fz, c='g', marker='^', s=50, label='Pollinated Flowers')
+
+        ax.set_xlabel('X (cm)')
+        ax.set_ylabel('Y (cm)')
+        ax.set_zlabel('Z (cm)')
+        ax.set_title('Robot and Pollinated Flowers')
+        ax.legend()
+        plt.show()
 
 
 
