@@ -1,12 +1,13 @@
 """
-Laptop Client for Stereo Vision Processing
+Laptop Client - Interactive Manual Control & Demo Mode
 
-Receives stereo frames from Pi, performs:
-- YOLO flower detection
-- Stereo depth estimation
-- Motor movement calculation
+Manual control mode:
+- Type commands in terminal to control motors
+- Commands: reset, move <motor> <steps>, arm <steps>, demo, quit
 
-Sends motor commands back to Pi for execution.
+Demo mode:
+- Automatic flower detection and tracking
+- Robot explores and approaches flowers
 """
 
 import socket
@@ -18,7 +19,7 @@ import torch
 from ultralytics import YOLO
 import os
 import time
-import csv
+import threading
 from datetime import datetime
 
 # =============================
@@ -30,31 +31,23 @@ PORT = 8000
 # =============================
 # Vision Configuration
 # =============================
-# Paths (relative to parent directory)
 YOLO_MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../current_best_yolo.pt"))
 CALIB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../Cam_Params/stereo_charuco_calibration_16cm.npz'))
 
-# Detection parameters
 CONFIDENCE_THRESHOLD = 0.6
 YOLO_CONF = 0.5
 SCALE_FOR_MATCHING = 0.5
 
-# Depth estimation
-MIN_DEPTH = 0.25  # Original: 0.25
-MAX_DEPTH = 2.0   # Original: 2.0
-EXPECTED_DISTANCE = 0.40  # Original: 0.40 (target working distance in meters)
+MIN_DEPTH = 0.25
+MAX_DEPTH = 2.0
+EXPECTED_DISTANCE = 0.40
 
-# Display
 SHOW_DEBUG = True
 DISPLAY_WIDTH = 1280
 DISPLAY_HEIGHT = 720
 
-# Timing recording
-RECORD_TIMING = True  # Set to True to record computation times to CSV
-TIMING_CSV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "computation_timing.csv"))
-
 # =============================
-# Motor Parameters (from FlowerTrackingStereo.py)
+# Motor Parameters
 # =============================
 WHEEL_DIAMETER_CM = 2.5
 CIRCUMFERENCE_CM = WHEEL_DIAMETER_CM * np.pi
@@ -66,13 +59,11 @@ PIXELS_PER_CM = 10.0
 MAX_CM_PER_CYCLE = 10.0
 MAX_STEPS_PER_CYCLE = int(MAX_CM_PER_CYCLE * STEPS_PER_CM)
 
-# Arm parameters
 WHEEL_DIAMETER_CM_ARM = 4.3
 CIRCUMFERENCE_CM_ARM = WHEEL_DIAMETER_CM_ARM * np.pi
 STEPS_PER_REV_ARM = 200
 STEPS_PER_CM_ARM = STEPS_PER_REV_ARM / CIRCUMFERENCE_CM_ARM
 
-# Motor direction mapping (from FlowerTrackingStereo.py)
 direction_dict = {
     "front": [("main", 1), ("main", 1)],
     "rear": [("main", -1), ("main", -1)],
@@ -102,6 +93,68 @@ baseline = np.linalg.norm(T)
 print(f"[Laptop] Baseline: {baseline:.4f} m")
 
 # =============================
+# Global State
+# =============================
+client_socket = None
+demo_mode = False
+demo_stop_flag = False
+current_frame_left = None
+current_frame_right = None
+frame_lock = threading.Lock()
+stereo_initialized = False
+mapLx, mapLy, mapRx, mapRy, Q, K_L_use = None, None, None, None, None, None
+frame_thread_failed = False
+shutdown_flag = False
+
+# =============================
+# Display Thread
+# =============================
+def display_thread():
+    """Show side-by-side stereo frames during manual mode."""
+    global shutdown_flag
+    window_name = "MANUAL MODE - Stereo Cameras"
+    try:
+        while not shutdown_flag:
+            with frame_lock:
+                if current_frame_left is None or current_frame_right is None:
+                    pass_frame = None
+                else:
+                    pass_frame = (
+                        current_frame_left.copy(),
+                        current_frame_right.copy()
+                    )
+            if pass_frame is None:
+                time.sleep(0.05)
+                continue
+            frame_left, frame_right = pass_frame
+
+            display_frame_left = frame_left.copy()
+            display_frame_right = frame_right.copy()
+
+            cv2.putText(display_frame_left, "Left Camera", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(display_frame_right, "Right Camera", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            h_display = DISPLAY_HEIGHT // 2
+            w_display = DISPLAY_WIDTH // 2
+            display_frame_left = cv2.resize(display_frame_left, (w_display, h_display))
+            display_frame_right = cv2.resize(display_frame_right, (w_display, h_display))
+
+            display_combined = np.hstack([display_frame_left, display_frame_right])
+            cv2.imshow(window_name, display_combined)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q') or key == 27:
+                shutdown_flag = True
+                break
+    finally:
+        try:
+            cv2.destroyWindow(window_name)
+        except Exception:
+            pass
+
+# =============================
 # Utility Functions
 # =============================
 def clamp(n, small, large):
@@ -120,7 +173,7 @@ def setup_stereo_rectification(w, h, scale):
     K_L_use = scale_intrinsics(K_L, scale)
     K_R_use = scale_intrinsics(K_R, scale)
     
-    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
+    R1, R2, P1, P2, Q_out, _, _ = cv2.stereoRectify(
         K_L_use, D_L, K_R_use, D_R, (w, h), R, T, alpha=1
     )
     
@@ -131,16 +184,14 @@ def setup_stereo_rectification(w, h, scale):
         K_R_use, D_R, R2, P2, (w, h), cv2.CV_32FC1
     )
     
-    return mapLx, mapLy, mapRx, mapRy, Q, K_L_use
+    return mapLx, mapLy, mapRx, mapRy, Q_out, K_L_use
 
 def compute_stereo_disparity(rectL, rectR, K_L_use):
     """Compute disparity map from rectified stereo pair."""
-    # Validate input shapes
     if rectL.shape != rectR.shape:
         print(f"[WARNING] Shape mismatch: rectL={rectL.shape}, rectR={rectR.shape}")
         return None
     
-    # Convert to grayscale
     if rectL.ndim == 3:
         rectL_gray = cv2.cvtColor(rectL, cv2.COLOR_BGR2GRAY)
         rectR_gray = cv2.cvtColor(rectR, cv2.COLOR_BGR2GRAY)
@@ -148,26 +199,19 @@ def compute_stereo_disparity(rectL, rectR, K_L_use):
         rectL_gray = rectL
         rectR_gray = rectR
     
-    # Validate grayscale conversion
     if rectL_gray.dtype != np.uint8:
         rectL_gray = rectL_gray.astype(np.uint8)
     if rectR_gray.dtype != np.uint8:
         rectR_gray = rectR_gray.astype(np.uint8)
     
-    # Apply CLAHE enhancement
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     rectL_proc = clahe.apply(rectL_gray)
     rectR_proc = clahe.apply(rectR_gray)
     
-    # Calculate numDisparities with validation
     try:
         expected_disp = (K_L_use[0, 0] * baseline) / EXPECTED_DISTANCE
         num_disp = int(np.ceil(expected_disp * 1.8 / 16.0) * 16)
-        # Clamp to safe range (must be multiple of 16)
-        # ORIGINAL RANGE: max(160, min(num_disp, 640)) - caused OutOfMemory error
-        # FIXED RANGE: max(16, min(num_disp, 256)) - safe for real-time processing
         num_disp = max(16, min(num_disp, 256))
-        # Ensure it's a multiple of 16
         num_disp = (num_disp // 16) * 16
         if num_disp < 16:
             num_disp = 16
@@ -175,25 +219,20 @@ def compute_stereo_disparity(rectL, rectR, K_L_use):
         print(f"[WARNING] Disparity calculation error: {e}, using default 128")
         num_disp = 128
     
-    # Adjust block size based on image resolution
     h, w = rectL_proc.shape
-    # ORIGINAL: always block_size = 5
-    # FIXED: adaptive - 5 for larger images, 3 for smaller resolution (better for 320x240)
     block_size = 5 if min(h, w) > 200 else 3
     
-    print(f"[DEBUG] Disparity params: numDisp={num_disp}, blockSize={block_size}, imgSize={w}x{h}")
-    
     stereo_matcher = cv2.StereoSGBM.create(
-        minDisparity=0,  # ORIGINAL: 0
-        numDisparities=num_disp,  # ORIGINAL: max(160, min(num_disp, 640))
-        blockSize=block_size,  # ORIGINAL: always 5 (now adaptive: 3 or 5)
-        P1=8 * block_size**2,  # ORIGINAL: 8 * 5**2 = 200 (now scales with block_size)
-        P2=32 * block_size**2,  # ORIGINAL: 32 * 5**2 = 800 (now scales with block_size)
-        disp12MaxDiff=1,  # ORIGINAL: 1
-        uniquenessRatio=10,  # ORIGINAL: 6 (increased for robustness)
-        speckleWindowSize=100,  # ORIGINAL: 80 (increased slightly)
-        speckleRange=32,  # ORIGINAL: 32
-        mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY  # ORIGINAL: same
+        minDisparity=0,
+        numDisparities=num_disp,
+        blockSize=block_size,
+        P1=8 * block_size**2,
+        P2=32 * block_size**2,
+        disp12MaxDiff=1,
+        uniquenessRatio=10,
+        speckleWindowSize=100,
+        speckleRange=32,
+        mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY
     )
     
     try:
@@ -274,7 +313,7 @@ def estimate_roi_depth(depth_map, roi_box, scale_factor=1.0):
     }
 
 def select_target_flower(detections, depth_stats_list, frame_width, frame_height):
-    """Select one flower to track (prioritize closest, then most centered)."""
+    """Select one flower to track."""
     if not detections:
         return None, None
     
@@ -292,10 +331,8 @@ def select_target_flower(detections, depth_stats_list, frame_width, frame_height
         center_x = (x1 + x2) / 2
         center_y = (y1 + y2) / 2
         
-        # Distance from frame center
         dist_from_center = np.sqrt((center_x - frame_center_x)**2 + (center_y - frame_center_y)**2)
         
-        # Prioritize by depth (closer is better) then by centering
         depth = depth_stats['median']
         score = depth * 0.7 + dist_from_center * 0.0003
         
@@ -318,7 +355,6 @@ def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
     
     move_plan = {}
     
-    # X axis movement (left/right rails)
     if abs(dx_cm) >= 0.5:
         if dx_cm > 0:
             entries = direction_dict["left"]
@@ -329,7 +365,6 @@ def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
             motor_steps = int(multiplier * steps_for_cm)
             move_plan[motor_name] = move_plan.get(motor_name, 0) + motor_steps
     
-    # Y axis movement (main rails forward/backward)
     if abs(dy_cm) >= 0.5:
         if dy_cm > 0:
             entries = direction_dict["rear"]
@@ -340,7 +375,6 @@ def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
             motor_steps = int(multiplier * steps_for_cm)
             move_plan[motor_name] = move_plan.get(motor_name, 0) + motor_steps
     
-    # Clamp to max steps
     for k in list(move_plan.keys()):
         capped = clamp(move_plan[k], -MAX_STEPS_PER_CYCLE, MAX_STEPS_PER_CYCLE)
         move_plan[k] = int(capped)
@@ -348,7 +382,7 @@ def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
     return move_plan
 
 def convert_depth_to_arm_steps(depth_m, target_depth_m=0.40):
-    """Convert depth to arm motor steps to reach target depth."""
+    """Convert depth to arm motor steps."""
     depth_cm = depth_m * 100
     target_cm = target_depth_m * 100
     
@@ -362,7 +396,6 @@ def convert_depth_to_arm_steps(depth_m, target_depth_m=0.40):
 # =============================
 def receive_stereo_frames(client_socket, data, payload_size):
     """Receive stereo frame pair from Pi."""
-    # Receive message size
     while len(data) < payload_size:
         packet = client_socket.recv(4096)
         if not packet:
@@ -373,7 +406,6 @@ def receive_stereo_frames(client_socket, data, payload_size):
     data = data[payload_size:]
     msg_size = struct.unpack("Q", packed_msg_size)[0]
     
-    # Receive frame data
     while len(data) < msg_size:
         packet = client_socket.recv(4096)
         if not packet:
@@ -383,78 +415,41 @@ def receive_stereo_frames(client_socket, data, payload_size):
     frame_data = data[:msg_size]
     data = data[msg_size:]
     
-    # Deserialize
     frames_dict = pickle.loads(frame_data)
     
-    # Decode JPEG images
     frame_left = cv2.imdecode(frames_dict['left'], cv2.IMREAD_COLOR)
     frame_right = cv2.imdecode(frames_dict['right'], cv2.IMREAD_COLOR)
     
     return frame_left, frame_right, data
 
 def send_motor_command(client_socket, command_dict):
-    """Send motor command dictionary to Pi."""
+    """Send motor command to Pi."""
     try:
         data = pickle.dumps(command_dict)
         client_socket.send(data)
     except Exception as e:
         print(f"[Laptop] Error sending command: {e}")
 
-def initialize_timing_csv():
-    """Initialize CSV file with headers if it doesn't exist."""
-    if not os.path.exists(TIMING_CSV_PATH):
-        with open(TIMING_CSV_PATH, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['timestamp', 'frame_id', 'detection_time_ms', 'depth_computation_time_ms', 
-                            'total_processing_time_ms', 'num_detections'])
-        print(f"[Laptop] Created timing CSV: {TIMING_CSV_PATH}")
-
-def record_timing_data(frame_id, detection_time, depth_time, total_time, num_detections):
-    """Append timing data to CSV file."""
-    with open(TIMING_CSV_PATH, 'a', newline='') as f:
-        writer = csv.writer(f)
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        writer.writerow([timestamp, frame_id, 
-                        f"{detection_time*1000:.2f}",  # Convert to ms
-                        f"{depth_time*1000:.2f}", 
-                        f"{total_time*1000:.2f}",
-                        num_detections])
-
 # =============================
-# Main Processing Loop
+# Frame Reception Thread
 # =============================
-def main():
-    # Connect to Pi
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.connect((PI_IP, PORT))
-    print(f"[Laptop] Connected to Pi at {PI_IP}:{PORT}")
-    
-    # Initialize timing CSV if enabled
-    if RECORD_TIMING:
-        initialize_timing_csv()
-        print(f"[Laptop] Timing recording enabled - logging to {TIMING_CSV_PATH}")
+def frame_reception_thread():
+    """Continuously receive frames from Pi."""
+    global current_frame_left, current_frame_right, stereo_initialized, mapLx, mapLy, mapRx, mapRy, Q, K_L_use, frame_thread_failed, shutdown_flag
     
     data = b""
     payload_size = struct.calcsize("Q")
     
-    # Initialize stereo rectification (will be set once we get first frame)
-    mapLx, mapLy, mapRx, mapRy, Q, K_L_use = None, None, None, None, None, None
-    stereo_initialized = False
-    
-    frame_count = 0
-    
     try:
-        while True:
-            # Receive stereo frames
+        while not shutdown_flag:
             frame_left, frame_right, data = receive_stereo_frames(client_socket, data, payload_size)
             
             if frame_left is None or frame_right is None:
                 print("[Laptop] Failed to receive frames")
+                frame_thread_failed = True
                 break
             
-            frame_count += 1
-            
-            # Initialize stereo rectification on first frame
+            # Initialize stereo on first frame
             if not stereo_initialized:
                 h, w = frame_left.shape[:2]
                 w_rect = int(w * SCALE_FOR_MATCHING)
@@ -463,92 +458,97 @@ def main():
                 stereo_initialized = True
                 print(f"[Laptop] Stereo initialized for {w}x{h} -> {w_rect}x{h_rect}")
             
-            # Downscale for stereo matching
+            with frame_lock:
+                current_frame_left = frame_left.copy()
+                current_frame_right = frame_right.copy()
+    
+    except Exception as e:
+        print(f"[Laptop] Frame reception error: {e}")
+        frame_thread_failed = True
+
+# =============================
+# Demo Mode
+# =============================
+def demo_mode_worker():
+    """Automatic flower detection and tracking demo."""
+    global demo_stop_flag, current_frame_left, current_frame_right, demo_mode
+    
+    frame_count = 0
+    
+    print("\n[DEMO] Starting automatic flower tracking demo...")
+    print("[DEMO] Press Ctrl+C to stop demo mode\n")
+    
+    try:
+        while not demo_stop_flag and demo_mode:
+            with frame_lock:
+                if current_frame_left is None or current_frame_right is None:
+                    time.sleep(0.05)
+                    continue
+                
+                frame_left = current_frame_left.copy()
+                frame_right = current_frame_right.copy()
+            
             h, w = frame_left.shape[:2]
             w_rect = int(w * SCALE_FOR_MATCHING)
             h_rect = int(h * SCALE_FOR_MATCHING)
+            
             frame_l_scaled = cv2.resize(frame_left, (w_rect, h_rect))
             frame_r_scaled = cv2.resize(frame_right, (w_rect, h_rect))
             
-            # Rectify
             rectL = cv2.remap(frame_l_scaled, mapLx, mapLy, cv2.INTER_LINEAR)
             rectR = cv2.remap(frame_r_scaled, mapRx, mapRy, cv2.INTER_LINEAR)
             
-            # Start timing if enabled
-            if RECORD_TIMING:
-                processing_start = time.time()
-            
-            # Compute depth
-            depth_start = time.time() if RECORD_TIMING else 0
             disparity = compute_stereo_disparity(rectL, rectR, K_L_use)
             
             if disparity is None:
-                print(f"[Laptop] Frame {frame_count}: Disparity computation failed, skipping")
+                print(f"[DEMO] Frame {frame_count}: Disparity failed, skipping")
                 send_motor_command(client_socket, {})
+                time.sleep(0.05)
                 continue
             
             depth_map = compute_depth_map(disparity, Q)
-            depth_time = (time.time() - depth_start) if RECORD_TIMING else 0
             
-            # Detect flowers on full-res left frame
-            detection_start = time.time() if RECORD_TIMING else 0
             detections = detect_flowers(frame_left, conf_threshold=YOLO_CONF)
-            detection_time = (time.time() - detection_start) if RECORD_TIMING else 0
             
-            # Estimate depth for each detection
             depth_stats_list = []
             for det in detections:
                 scaled_box = tuple(int(coord * SCALE_FOR_MATCHING) for coord in det['box'])
                 depth_stats = estimate_roi_depth(depth_map, scaled_box)
                 depth_stats_list.append(depth_stats)
             
-            # Select target flower
             target_det, target_depth = select_target_flower(detections, depth_stats_list, w, h)
             
-            # Calculate motor command
             motor_command = {}
             
             if target_det is None:
-                print(f"[Laptop] Frame {frame_count}: No valid flower detected, searching...")
-                # Slow backward movement to search
-                motor_command = {"main": int(0.5 * STEPS_PER_CM)}
+                print(f"[DEMO] Frame {frame_count}: Searching for flowers... moving backward")
+                motor_command = {"main": int(0.3 * STEPS_PER_CM)}
             else:
-                # Calculate offsets from center
                 x1, y1, x2, y2 = target_det['box']
                 flower_center_x = (x1 + x2) / 2
                 flower_center_y = (y1 + y2) / 2
                 
                 dx = flower_center_x - (w / 2)
                 dy = flower_center_y - (h / 2)
-                
                 depth_m = target_depth['median']
                 
-                print(f"[Laptop] Frame {frame_count}: Target at dx={dx:.0f}px, dy={dy:.0f}px, depth={depth_m:.3f}m")
+                print(f"[DEMO] Frame {frame_count}: Target at dx={dx:.0f}px, dy={dy:.0f}px, depth={depth_m:.3f}m (conf={target_det['confidence']:.2f})")
                 
-                # Plan movement
                 motor_command = convert_offsets_to_motor_steps(dx, dy)
                 
-                # Add arm adjustment if well-centered
                 if abs(dx) < 30 and abs(dy) < 30:
                     arm_steps = convert_depth_to_arm_steps(depth_m, target_depth_m=0.40)
                     if abs(arm_steps) > 10:
                         motor_command['arm'] = arm_steps
-                        print(f"[Laptop] Adding arm adjustment: {arm_steps} steps")
+                        print(f"[DEMO] Adding arm adjustment: {arm_steps} steps")
             
-            # Record timing data if enabled
-            if RECORD_TIMING:
-                total_time = time.time() - processing_start
-                record_timing_data(frame_count, detection_time, depth_time, total_time, len(detections))
-            
-            # Send motor command to Pi
             send_motor_command(client_socket, motor_command)
             
-            # Display debug window
+            # Display
             if SHOW_DEBUG:
                 display_frame_left = frame_left.copy()
                 display_frame_right = frame_right.copy()
                 
-                # Draw all detections on left frame
                 for det, depth_stats in zip(detections, depth_stats_list):
                     x1, y1, x2, y2 = det['box']
                     is_target = (det == target_det)
@@ -562,11 +562,9 @@ def main():
                         cv2.putText(display_frame_left, label, (x1, y1 - 10),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                 
-                # Draw center crosshair on left frame
                 cv2.line(display_frame_left, (w//2 - 20, h//2), (w//2 + 20, h//2), (255, 0, 0), 2)
                 cv2.line(display_frame_left, (w//2, h//2 - 20), (w//2, h//2 + 20), (255, 0, 0), 2)
                 
-                # Draw offset to target on left frame
                 if target_det:
                     x1, y1, x2, y2 = target_det['box']
                     target_x = int((x1 + x2) / 2)
@@ -574,39 +572,269 @@ def main():
                     cv2.line(display_frame_left, (w//2, h//2), (target_x, target_y), (0, 255, 255), 2)
                     cv2.circle(display_frame_left, (target_x, target_y), 10, (0, 255, 0), -1)
                 
-                # Info overlay on left frame
-                cv2.putText(display_frame_left, f"Frame: {frame_count} | Detections: {len(detections)}", (10, 30),
+                cv2.putText(display_frame_left, f"[DEMO] Frame: {frame_count} | Detections: {len(detections)}", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(display_frame_right, "[DEMO] Right Camera (Reference)", (10, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
-                if motor_command:
-                    cmd_str = ", ".join([f"{k}:{v}" for k, v in motor_command.items()])
-                    cv2.putText(display_frame_left, f"Command: {cmd_str}", (10, 60),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                
-                # Add label to right frame
-                cv2.putText(display_frame_right, "Right Camera (Reference)", (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                
-                # Resize both frames to half height and concatenate horizontally
                 h_display = DISPLAY_HEIGHT // 2
                 w_display = DISPLAY_WIDTH // 2
                 display_frame_left = cv2.resize(display_frame_left, (w_display, h_display))
                 display_frame_right = cv2.resize(display_frame_right, (w_display, h_display))
                 
                 display_combined = np.hstack([display_frame_left, display_frame_right])
-                cv2.imshow("Laptop - Stereo Cameras & Flower Tracking", display_combined)
+                cv2.imshow("DEMO MODE - Automatic Flower Tracking", display_combined)
                 
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q') or key == 27:
+                    demo_stop_flag = True
                     break
+            
+            frame_count += 1
+            time.sleep(0.05)
+    
+    except Exception as e:
+        print(f"[DEMO] Error: {e}")
+    finally:
+        print("[DEMO] Demo mode stopped")
+        send_motor_command(client_socket, {})
+        demo_mode = False
+
+# =============================
+# Command Interface
+# =============================
+def print_help():
+    """Print available commands."""
+    print("\n" + "="*60)
+    print("LAPTOP CLIENT - MANUAL CONTROL MODE")
+    print("="*60)
+    print("\nAvailable Commands:")
+    print("  reset                    - Return to home position (all motors to 0)")
+    print("  move <motor> <steps>     - Move specific motor")
+    print("                             Motors: rails, main, arm")
+    print("                             Steps: positive or negative integer")
+    print("  movecm <motor> <cm>      - Move motor by centimeters (rails/main/arm)")
+    print("                             Uses calibration to convert cm -> steps")
+    print("  arm <steps>              - Shortcut for 'move arm <steps>' (held)")
+    print("  release                  - Release all motors (stop holding position)")
+    print("  demo                     - Start automatic flower detection demo")
+    print("  stop                     - Stop demo mode")
+    print("  help                     - Show this help message")
+    print("  quit                     - Exit program")
+    print("\nExamples:")
+    print("  move rails 100           - Move rails motor 100 steps")
+    print("  move main -50            - Move main motor backward 50 steps")
+    print("  arm 20                   - Move arm up 20 steps")
+    print("  movecm rails 2           - Move rails ~2 cm")
+    print("  movecm arm 0.5           - Move arm ~0.5 cm (held)")
+    print("  release                  - Release all motors after holding")
+    print("  move rails 0             - Stop rails (send 0)")
+    print("="*60 + "\n")
+
+def parse_and_execute_command(cmd_input):
+    """Parse user command and execute."""
+    global demo_mode, demo_stop_flag
+    
+    cmd_input = cmd_input.strip().lower()
+    
+    if not cmd_input:
+        return
+    
+    parts = cmd_input.split()
+    command = parts[0]
+    
+    try:
+        if command == "reset":
+            print("[COMMAND] Resetting all motors to home position...")
+            motor_command = {"rails": 0, "main": 0, "arm": 0}
+            send_motor_command(client_socket, motor_command)
+            print("[COMMAND] Reset command sent!")
+        
+        elif command == "move":
+            if len(parts) < 3:
+                print("[ERROR] Format: move <motor> <steps>")
+                print("[ERROR] Example: move rails 100")
+                return
+            
+            motor_name = parts[1]
+            if motor_name not in ["rails", "main", "arm"]:
+                print(f"[ERROR] Unknown motor: {motor_name}")
+                print("[ERROR] Valid motors: rails, main, arm")
+                return
+            
+            try:
+                steps = int(parts[2])
+            except ValueError:
+                print(f"[ERROR] Invalid steps value: {parts[2]}")
+                return
+            
+            motor_command = {motor_name: steps}
+            print(f"[COMMAND] Moving {motor_name} for {steps} steps...")
+            send_motor_command(client_socket, motor_command)
+            print("[COMMAND] Move command sent!")
+
+        elif command == "movecm":
+            if len(parts) < 3:
+                print("[ERROR] Format: movecm <motor> <cm>")
+                print("[ERROR] Example: movecm rails 2")
+                return
+
+            motor_name = parts[1]
+            if motor_name not in ["rails", "main", "arm"]:
+                print(f"[ERROR] movecm supports rails/main/arm (got {motor_name})")
+                return
+
+            try:
+                dist_cm = float(parts[2])
+            except ValueError:
+                print(f"[ERROR] Invalid cm value: {parts[2]}")
+                return
+
+            # Use appropriate calibration for each motor
+            if motor_name == "arm":
+                steps = int(dist_cm * STEPS_PER_CM_ARM)
+            else:
+                steps = int(dist_cm * STEPS_PER_CM)
+
+            motor_command = {motor_name: steps}
+            # Keep arm held after movement
+            if motor_name == "arm" and steps != 0:
+                motor_command["_hold_motors"] = ["arm"]
+            print(f"[COMMAND] Moving {motor_name} ~{dist_cm:.2f} cm ({steps} steps)")
+            send_motor_command(client_socket, motor_command)
+            print("[COMMAND] Move command sent!")
+        
+        elif command == "arm":
+            if len(parts) < 2:
+                print("[ERROR] Format: arm <steps>")
+                print("[ERROR] Example: arm 10")
+                return
+            
+            try:
+                steps = int(parts[1])
+            except ValueError:
+                print(f"[ERROR] Invalid steps value: {parts[1]}")
+                return
+            
+            motor_command = {"arm": steps, "_hold_motors": ["arm"]}
+            print(f"[COMMAND] Moving arm for {steps} steps (held)...")
+            send_motor_command(client_socket, motor_command)
+            print("[COMMAND] Arm command sent!")
+        
+        elif command == "release":
+            print("[COMMAND] Releasing all motors...")
+            motor_command = {"_action": "release_all"}
+            send_motor_command(client_socket, motor_command)
+            print("[COMMAND] Release command sent!")
+        
+        elif command == "demo":
+            if demo_mode:
+                print("[COMMAND] Demo mode already running!")
+                return
+            
+            demo_stop_flag = False
+            demo_mode = True
+            demo_thread = threading.Thread(target=demo_mode_worker, daemon=True)
+            demo_thread.start()
+        
+        elif command == "stop":
+            if not demo_mode:
+                print("[COMMAND] Demo mode is not running")
+                return
+            
+            print("[COMMAND] Stopping demo mode...")
+            demo_stop_flag = True
+            time.sleep(0.5)
+            print("[COMMAND] Demo mode stopped")
+        
+        elif command == "help":
+            print_help()
+        
+        elif command == "quit" or command == "exit":
+            return "QUIT"
+        
+        else:
+            print(f"[ERROR] Unknown command: {command}")
+            print("[ERROR] Type 'help' for available commands")
+    
+    except Exception as e:
+        print(f"[ERROR] Command execution failed: {e}")
+
+# =============================
+# Main
+# =============================
+def main():
+    global client_socket, shutdown_flag, frame_thread_failed, demo_mode, demo_stop_flag
+    
+    # Connect to Pi
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        client_socket.connect((PI_IP, PORT))
+        print(f"[Laptop] Connected to Pi at {PI_IP}:{PORT}")
+    except Exception as e:
+        print(f"[Laptop] Connection failed: {e}")
+        return
+    
+    # Start frame reception thread
+    frame_thread = threading.Thread(target=frame_reception_thread, daemon=True)
+    frame_thread.start()
+    print("[Laptop] Frame reception thread started")
+    
+    # Wait for frames to arrive (longer, with error detection)
+    print("[Laptop] Waiting for first frame from Pi...")
+    wait_start = time.time()
+    max_wait = 15  # seconds
+    while current_frame_left is None and not frame_thread_failed:
+        if time.time() - wait_start > max_wait:
+            break
+        time.sleep(0.5)
+    
+    if frame_thread_failed:
+        print("[Laptop] Frame reception failed. Check Pi server and connection.")
+        shutdown_flag = True
+        client_socket.close()
+        return
+    
+    if current_frame_left is None:
+        print(f"[Laptop] No frames received from Pi within {max_wait}s. Exiting.")
+        shutdown_flag = True
+        client_socket.close()
+        return
+    
+    print("[Laptop] Frames received! Ready for commands.")
+
+    # Start display thread for manual viewing
+    display_thread_obj = None
+    if SHOW_DEBUG:
+        display_thread_obj = threading.Thread(target=display_thread, daemon=True)
+        display_thread_obj.start()
+        print("[Laptop] Display thread started (manual view)")
+    
+    print_help()
+    
+    try:
+        while True:
+            try:
+                cmd_input = input("> ").strip()
+                result = parse_and_execute_command(cmd_input)
+                if result == "QUIT":
+                    break
+            except KeyboardInterrupt:
+                print("\n[Laptop] Interrupted by user")
+                break
+            except EOFError:
+                break
     
     except KeyboardInterrupt:
-        print("[Laptop] Interrupted by user")
+        print("\n[Laptop] Interrupted by user")
     except Exception as e:
         print(f"[Laptop] Error: {e}")
-        import traceback
-        traceback.print_exc()
     finally:
+        demo_stop_flag = True
+        demo_mode = False
+        shutdown_flag = True
+        time.sleep(0.5)
+        
         client_socket.close()
         cv2.destroyAllWindows()
         print("[Laptop] Cleanup complete")
