@@ -50,8 +50,16 @@ def release_all_motors():
         except Exception:
             pass
 
-def motor_step_worker(motor_obj, steps, step_delay=STEP_DELAY, style=stepper.DOUBLE):
-    """Drive motor for given steps (signed)."""
+def motor_step_worker(motor_obj, steps, step_delay=STEP_DELAY, style=stepper.DOUBLE, hold=False):
+    """Drive motor for given steps (signed).
+    
+    Args:
+        motor_obj: Motor object to control
+        steps: Number of steps (positive/negative for direction)
+        step_delay: Delay between steps
+        style: Stepping style (SINGLE, DOUBLE, etc.)
+        hold: If True, don't release motor after stepping
+    """
     if steps == 0:
         return
     direction = stepper.FORWARD if steps > 0 else stepper.BACKWARD
@@ -63,10 +71,12 @@ def motor_step_worker(motor_obj, steps, step_delay=STEP_DELAY, style=stepper.DOU
     except Exception as e:
         print(f"[Pi] Motor error: {e}")
     finally:
-        try:
-            motor_obj.release()
-        except Exception:
-            pass
+        # Only release if not in hold mode
+        if not hold:
+            try:
+                motor_obj.release()
+            except Exception:
+                pass
 
 def execute_motor_command(command_dict):
     """
@@ -74,15 +84,36 @@ def execute_motor_command(command_dict):
     
     Args:
         command_dict: Dictionary with motor names as keys and step counts as values
-                     e.g., {'rails': 100, 'main': -50, 'arm': 20}
+                     Supports special keys:
+                       - _action: 'release_all' to release all motors
+                       - _hold_motors: list of motor names to keep held after movement
+                     e.g., {'rails': 100, 'main': -50, 'arm': 20, '_hold_motors': ['arm']}
     """
     if not command_dict or len(command_dict) == 0:
         return
     
-    print(f"[Pi] Executing motor command: {command_dict}")
+    # Handle special action commands
+    action = command_dict.get("_action")
+    if action == "release_all":
+        print("[Pi] Releasing all motors")
+        release_all_motors()
+        return
+    
+    # Extract hold_motors list (motors that should NOT be released after movement)
+    hold_motors = set(command_dict.get("_hold_motors", []))
+    
+    # Filter out special keys
+    motor_commands = {k: v for k, v in command_dict.items() if not k.startswith("_")}
+    
+    if not motor_commands:
+        return
+    
+    print(f"[Pi] Executing motor command: {motor_commands}")
+    if hold_motors:
+        print(f"[Pi] Motors to hold: {hold_motors}")
     
     threads = []
-    for motor_name, steps in command_dict.items():
+    for motor_name, steps in motor_commands.items():
         motor_obj = motor_dict.get(motor_name)
         if motor_obj is None:
             print(f"[Pi] Warning: Unknown motor '{motor_name}'")
@@ -94,7 +125,10 @@ def execute_motor_command(command_dict):
         # Use appropriate delay for arm motor
         delay = STEP_DELAY_ARM if motor_name == "arm" else STEP_DELAY
         
-        t = threading.Thread(target=motor_step_worker, args=(motor_obj, steps, delay))
+        # Check if this motor should be held
+        hold = motor_name in hold_motors
+        
+        t = threading.Thread(target=motor_step_worker, args=(motor_obj, steps, delay, stepper.DOUBLE, hold))
         t.daemon = True
         threads.append(t)
         t.start()
