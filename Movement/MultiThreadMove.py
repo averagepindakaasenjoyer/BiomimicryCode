@@ -4,8 +4,15 @@ import board
 import numpy as np
 from adafruit_motor import stepper
 from adafruit_motorkit import MotorKit
+import busio
+import board
+from adafruit_motorkit import MotorKit
 
-kit1 = MotorKit(i2c=board.I2C(), address=0x60)
+i2c = busio.I2C(board.SCL, board.SDA)
+kit1 = MotorKit(i2c=i2c, address=0x60)
+
+
+# kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
 
 
@@ -126,30 +133,30 @@ if __name__ == "__main__":
     # Example usage: Move forward 20 cm and right 10 cm simultaneously
     # ARM MIOVES UP 45 CM
     thread1 = threading.Thread(target=move_cm, args=(
-        -30, 0.02, [kit2.stepper1], True))
+        60, 0, [kit2.stepper1], True))
     thread2 = threading.Thread(target=move_cm, args=(
-        15, 0.02, [kit1.stepper1], False))
+        10, 0.02, [kit1.stepper1], False))
     thread3 = threading.Thread(target=move_cm, args=(
-        15, 0.02, [kit1.stepper2], False))
+        10, 0.02, [kit1.stepper2], False))
 
     thread1.start()
-    # thread2.start()
-    # thread3.start()
+    thread2.start()
+    thread3.start()
 
     thread1.join()
-    # thread3.join()
-    # thread2.join()
+    thread3.join()
+    thread2.join()
 
     thread1 = threading.Thread(target=move_cm, args=(
-        15, 0.02, [kit2.stepper1], True))
+        -60, 0, [kit2.stepper1], True))
     thread2 = threading.Thread(target=move_cm, args=(
-        -15, 0.02, [kit1.stepper1], False))
+        -10, 0.02, [kit1.stepper1], False))
     thread3 = threading.Thread(target=move_cm, args=(
-        -15, 0.02, [kit1.stepper2], False))
+        -10, 0.02, [kit1.stepper2], False))
     thread1.start()
-    # thread2.start()
-    # thread3.start()
+    thread2.start()
+    thread3.start()
 
     thread1.join()
-    # thread3.join()
-    # thread2.join()
+    thread3.join()
+    thread2.join()
