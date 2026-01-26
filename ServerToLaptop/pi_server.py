@@ -19,7 +19,7 @@ from adafruit_motorkit import MotorKit
 PORT = 8000
 
 # Camera indices (adjust based on your setup)
-CAM_LEFT = 1
+CAM_LEFT = 0
 CAM_RIGHT = 2
 
 # =============================
