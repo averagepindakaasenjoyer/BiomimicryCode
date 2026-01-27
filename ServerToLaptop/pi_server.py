@@ -14,7 +14,7 @@ import threading
 import board
 from adafruit_motor import stepper
 from adafruit_motorkit import MotorKit
-from gpiozero import Motor
+from gpiozero import OutputDevice 
 
 # Network configuration
 PORT = 8000
@@ -31,7 +31,7 @@ kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
 
 # GPIO motor for Van de Graaf (pins 17 and 27)
-van_de_graaf_gpio_motor = Motor(forward=17, backward=27)
+van_de_graaf_gpio_motor = OutputDevice(17, active_high=False, initial_value=False)
 
 motor_dict = {
     "rails": kit1.stepper1,
@@ -124,17 +124,17 @@ def van_de_graaf_worker(duration_ms):
     print(f"[Pi] Van de Graaf starting for {duration_ms}ms ({duration_s}s)")
     
     try:
-        van_de_graaf_motor.stop()  # Ensure stopped first
+        van_de_graaf_motor.off()  # Ensure stopped first
         time.sleep(0.1)  # Brief delay
-        print(f"[Pi] Van de Graaf motor.forward() starting...")
-        van_de_graaf_motor.forward()  # Start motor
+        print(f"[Pi] Van de Graaf motor.on() starting...")
+        van_de_graaf_motor.on()  # Start motor
         time.sleep(duration_s)
-        print(f"[Pi] Van de Graaf motor.stop() called after {duration_s}s")
+        print(f"[Pi] Van de Graaf motor.off() called after {duration_s}s")
     except Exception as e:
         print(f"[Pi] Van de Graaf motor error: {e}")
     finally:
         # Ensure motor stops - don't silence exceptions
-        van_de_graaf_motor.stop()
+        van_de_graaf_motor.off()
         print(f"[Pi] Van de Graaf motor stopped in finally block")
 
 def execute_motor_command(command_dict):
