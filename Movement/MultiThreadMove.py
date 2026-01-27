@@ -152,6 +152,14 @@ def VanDeGraaf_move(times):
 
     time.sleep(times)
     motor.forward()  # stops motor
+def DCMotor(times):
+    """
+    Move the dc motor
+    """
+    kit2.motor4.throttle =  1 # starts motor forward at full speed
+
+    time.sleep(times)
+    kit2.motor4.throttle = 0.0  # stops motor
 
 
 if __name__ == "__main__":
@@ -163,20 +171,23 @@ if __name__ == "__main__":
         10, 0.02, [kit1.stepper1], False))
     thread3 = threading.Thread(target=move_cm, args=(
         10, 0.02, [kit1.stepper2], False))
-    thread4 = threading.Thread(target=VanDeGraaf_move, args=(5,))
+    thread4 = threading.Thread(target=VanDeGraaf_move, args=(20,))
     thread5 = threading.Thread(target=shake, args=(5,))
+    thread6 = threading.Thread(target=DCMotor, args=(0.1,))
 
-
-    thread1.start()
+    # thread1.start()
     
     # thread2.start()
     # thread3.start()
     thread4.start()
     # thread5.start()
+    # thread6.start()
 
     
     # thread3.join()
     # thread2.join()
     thread4.join()
     # thread5.join()
-    thread1.join()
+    # thread1.join()
+    # thread6.start()
+
