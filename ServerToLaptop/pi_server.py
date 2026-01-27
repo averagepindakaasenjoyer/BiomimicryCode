@@ -121,18 +121,21 @@ def van_de_graaf_worker(duration_ms):
         duration_ms: Duration to run motor in milliseconds
     """
     duration_s = duration_ms / 1000.0
+    print(f"[Pi] Van de Graaf starting for {duration_ms}ms ({duration_s}s)")
+    
     try:
         van_de_graaf_motor.stop()  # Ensure stopped first
         time.sleep(0.1)  # Brief delay
+        print(f"[Pi] Van de Graaf motor.forward() starting...")
         van_de_graaf_motor.forward()  # Start motor
         time.sleep(duration_s)
+        print(f"[Pi] Van de Graaf motor.stop() called after {duration_s}s")
     except Exception as e:
         print(f"[Pi] Van de Graaf motor error: {e}")
     finally:
-        try:
-            van_de_graaf_motor.stop()  # Stop motor
-        except Exception:
-            pass
+        # Ensure motor stops - don't silence exceptions
+        van_de_graaf_motor.stop()
+        print(f"[Pi] Van de Graaf motor stopped in finally block")
 
 def execute_motor_command(command_dict):
     """
