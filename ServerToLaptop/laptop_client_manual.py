@@ -474,7 +474,8 @@ def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
     
     move_plan = {}
     
-    if abs(dx_cm) >= 0.5:
+    # Lower threshold to 0.1cm for smaller movements
+    if abs(dx_cm) >= 0.1:
         if dx_cm > 0:
             entries = direction_dict["left"]
         else:
@@ -484,7 +485,7 @@ def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
             motor_steps = int(multiplier * steps_for_cm)
             move_plan[motor_name] = move_plan.get(motor_name, 0) + motor_steps
     
-    if abs(dy_cm) >= 0.5:
+    if abs(dy_cm) >= 0.1:
         if dy_cm > 0:
             entries = direction_dict["rear"]
         else:
@@ -559,7 +560,9 @@ def send_motor_command(client_socket, command_dict):
     """Send motor command to Pi."""
     try:
         data = pickle.dumps(command_dict)
+        print(f"[Laptop] SENDING MOTOR COMMAND: {command_dict} ({len(data)} bytes)")
         client_socket.send(data)
+        print(f"[Laptop] Motor command sent successfully")
     except Exception as e:
         print(f"[Laptop] Error sending command: {e}")
 

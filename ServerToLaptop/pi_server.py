@@ -153,7 +153,10 @@ def execute_motor_command(command_dict):
 
     """
     if not command_dict or len(command_dict) == 0:
+        print("[Pi] Empty command dict, no motors to execute")
         return
+    
+    print(f"[Pi] EXECUTING MOTOR COMMAND: {command_dict}")
     
     # Handle special action commands
     action = command_dict.get("_action")
@@ -167,6 +170,8 @@ def execute_motor_command(command_dict):
     
     # Filter out special keys
     motor_commands = {k: v for k, v in command_dict.items() if not k.startswith("_")}
+    
+    print(f"[Pi] Motor commands after filtering: {motor_commands}")
     
     if not motor_commands:
         return
@@ -253,11 +258,20 @@ def send_stereo_frames(conn, frame_left, frame_right):
 def receive_motor_command(conn):
     """Receive motor command from laptop."""
     try:
-        data = conn.recv(4096)
+        conn.setblocking(False)  # Non-blocking mode
+        try:
+            data = conn.recv(4096)
+        except BlockingIOError:
+            # No data available
+            return None
+        finally:
+            conn.setblocking(True)  # Back to blocking
+        
         if not data:
             return None
         
         command_dict = pickle.loads(data)
+        print(f"[Pi] RECEIVED MOTOR COMMAND: {command_dict}")
         return command_dict
     except Exception as e:
         print(f"[Pi] Error receiving command: {e}")
