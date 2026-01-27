@@ -35,9 +35,19 @@ motor_dict = {
     "arm": kit2.stepper1,
 }
 
+# Continuous motors (throttle-based, for timing-controlled operations)
+continuous_motor_dict = {
+    "vibrate": kit2.motor3,      # Vibration motor
+    "van_de_graaf": kit2.motor4,  # Van de Graaf generator motor
+}
+
 # Motor step delay
 STEP_DELAY = 0.01
 STEP_DELAY_ARM = 0.01
+
+# Vibration and van de Graaf throttle settings
+VIBRATE_THROTTLE = 1.0      # Full speed for vibration motor
+VAN_DE_GRAAF_THROTTLE = 1.0 # Full speed for van de Graaf motor
 
 # =============================
 # Motor Control Functions
@@ -78,16 +88,41 @@ def motor_step_worker(motor_obj, steps, step_delay=STEP_DELAY, style=stepper.DOU
             except Exception:
                 pass
 
+def continuous_motor_worker(motor_obj, motor_name, duration_ms, throttle=1.0):
+    """Run continuous motor for specified duration in milliseconds.
+    
+    Args:
+        motor_obj: Motor object to control (continuous motor)
+        motor_name: Name of motor (for logging)
+        duration_ms: Duration to run motor in milliseconds
+        throttle: Throttle value (0.0 to 1.0)
+    """
+    duration_s = duration_ms / 1000.0
+    try:
+        motor_obj.throttle = throttle
+        time.sleep(duration_s)
+    except Exception as e:
+        print(f"[Pi] Continuous motor error ({motor_name}): {e}")
+    finally:
+        try:
+            motor_obj.throttle = 0.0  # Stop motor
+        except Exception:
+            pass
+
 def execute_motor_command(command_dict):
     """
     Execute motor movements based on command dictionary.
     
     Args:
-        command_dict: Dictionary with motor names as keys and step counts as values
+        command_dict: Dictionary with motor names as keys and values
+                     Stepper motors: step counts (positive/negative for direction)
+                     Continuous motors (vibrate, van_de_graaf): duration in milliseconds
                      Supports special keys:
                        - _action: 'release_all' to release all motors
-                       - _hold_motors: list of motor names to keep held after movement
+                       - _hold_motors: list of stepper motor names to keep held after movement
                      e.g., {'rails': 100, 'main': -50, 'arm': 20, '_hold_motors': ['arm']}
+                     e.g., {'vibrate': 500, 'van_de_graaf': 200}
+
     """
     if not command_dict or len(command_dict) == 0:
         return
@@ -113,25 +148,43 @@ def execute_motor_command(command_dict):
         print(f"[Pi] Motors to hold: {hold_motors}")
     
     threads = []
-    for motor_name, steps in motor_commands.items():
+    for motor_name, value in motor_commands.items():
+        # Check if this is a stepper motor
         motor_obj = motor_dict.get(motor_name)
-        if motor_obj is None:
-            print(f"[Pi] Warning: Unknown motor '{motor_name}'")
-            continue
-        
-        if steps == 0:
-            continue
-        
-        # Use appropriate delay for arm motor
-        delay = STEP_DELAY_ARM if motor_name == "arm" else STEP_DELAY
-        
-        # Check if this motor should be held
-        hold = motor_name in hold_motors
-        
-        t = threading.Thread(target=motor_step_worker, args=(motor_obj, steps, delay, stepper.DOUBLE, hold))
-        t.daemon = True
-        threads.append(t)
-        t.start()
+        if motor_obj is not None:
+            # Stepper motor
+            steps = value
+            if steps == 0:
+                continue
+            
+            # Use appropriate delay for arm motor
+            delay = STEP_DELAY_ARM if motor_name == "arm" else STEP_DELAY
+            
+            # Check if this motor should be held
+            hold = motor_name in hold_motors
+            
+            t = threading.Thread(target=motor_step_worker, args=(motor_obj, steps, delay, stepper.DOUBLE, hold))
+            t.daemon = True
+            threads.append(t)
+            t.start()
+        else:
+            # Check if this is a continuous motor
+            cont_motor_obj = continuous_motor_dict.get(motor_name)
+            if cont_motor_obj is not None:
+                # Continuous motor (value is duration in milliseconds)
+                duration_ms = value
+                if duration_ms <= 0:
+                    continue
+                
+                # Get appropriate throttle
+                throttle = VIBRATE_THROTTLE if motor_name == "vibrate" else VAN_DE_GRAAF_THROTTLE
+                
+                t = threading.Thread(target=continuous_motor_worker, args=(cont_motor_obj, motor_name, duration_ms, throttle))
+                t.daemon = True
+                threads.append(t)
+                t.start()
+            else:
+                print(f"[Pi] Warning: Unknown motor '{motor_name}'")
     
     # Wait for all motors to complete
     for t in threads:

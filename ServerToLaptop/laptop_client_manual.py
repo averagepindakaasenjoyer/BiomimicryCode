@@ -59,10 +59,17 @@ PIXELS_PER_CM = 10.0
 MAX_CM_PER_CYCLE = 10.0
 MAX_STEPS_PER_CYCLE = int(MAX_CM_PER_CYCLE * STEPS_PER_CM)
 
-WHEEL_DIAMETER_CM_ARM = 4.3
+WHEEL_DIAMETER_CM_ARM = 3.5
 CIRCUMFERENCE_CM_ARM = WHEEL_DIAMETER_CM_ARM * np.pi
 STEPS_PER_REV_ARM = 200
 STEPS_PER_CM_ARM = STEPS_PER_REV_ARM / CIRCUMFERENCE_CM_ARM
+ARM_CALIBRATION_FACTOR = 1.0  # Adjust if arm movement doesn't match commands
+# If arm moves 7 cm when commanded 10 cm, set this to 10/7 ≈ 1.429
+STEPS_PER_CM_ARM = STEPS_PER_CM_ARM * ARM_CALIBRATION_FACTOR
+
+# Arm bottom position offset compensation
+ARM_BOTTOM_OFFSET_CM = 1.5  # Extra distance needed when arm is at bottom
+arm_is_at_bottom = True  # Track if arm is at bottom position
 
 direction_dict = {
     "front": [("main", 1), ("main", 1)],
@@ -107,6 +114,25 @@ frame_thread_failed = False
 shutdown_flag = False
 
 # =============================
+# Position Tracking
+# =============================
+# Coordinate system: (0,0) is rear-right (origin)
+# x: rails position (cm) - 0 at right, increases going left, max 45 cm
+# y: main position (cm) - 0 at rear, increases going forward, max 18 cm
+# z: arm position (cm) - 0 at bottom/released, increases going up, max 20 cm
+
+current_position = {"x": 0.0, "y": 0.0, "z": 0.0}  # Position in cm
+position_lock = threading.Lock()
+
+# Boundary limits in cm
+LIMIT_X_MIN = 0.0       # Rightmost position
+LIMIT_X_MAX = 45.0      # Leftmost position (rails: 45 cm)
+LIMIT_Y_MIN = 0.0       # Rearmost position
+LIMIT_Y_MAX = 18.0      # Frontmost position (main: 18 cm)
+LIMIT_Z_MIN = 0.0       # Bottom/released position
+LIMIT_Z_MAX = 20.0      # Highest position (arm: 20 cm)
+
+# =============================
 # Display Thread
 # =============================
 def display_thread():
@@ -141,7 +167,7 @@ def display_thread():
             display_frame_left = cv2.resize(display_frame_left, (w_display, h_display))
             display_frame_right = cv2.resize(display_frame_right, (w_display, h_display))
 
-            display_combined = np.hstack([display_frame_left, display_frame_right])
+            display_combined = np.hstack([display_frame_right, display_frame_left])
             cv2.imshow(window_name, display_combined)
 
             key = cv2.waitKey(1) & 0xFF
@@ -159,6 +185,74 @@ def display_thread():
 # =============================
 def clamp(n, small, large):
     return max(small, min(n, large))
+
+def get_current_position():
+    """Get current position safely."""
+    with position_lock:
+        return current_position.copy()
+
+def update_position(delta_x=0.0, delta_y=0.0, delta_z=0.0):
+    """Update position and enforce limits."""
+    with position_lock:
+        new_x = current_position["x"] + delta_x
+        new_y = current_position["y"] + delta_y
+        new_z = current_position["z"] + delta_z
+        
+        # Clamp to limits
+        current_position["x"] = clamp(new_x, LIMIT_X_MIN, LIMIT_X_MAX)
+        current_position["y"] = clamp(new_y, LIMIT_Y_MIN, LIMIT_Y_MAX)
+        current_position["z"] = clamp(new_z, LIMIT_Z_MIN, LIMIT_Z_MAX)
+
+def reset_position():
+    """Reset to origin (0,0,0) - rear-right."""
+    with position_lock:
+        current_position["x"] = 0.0
+        current_position["y"] = 0.0
+        current_position["z"] = 0.0
+
+def print_position():
+    """Print current position and limits."""
+    pos = get_current_position()
+    print("\n" + "="*60)
+    print("CURRENT POSITION")
+    print("="*60)
+    print(f"  X (rails):  {pos['x']:6.2f} cm  [0.00 - 45.00] (0=right, 45=left)")
+    print(f"  Y (main):   {pos['y']:6.2f} cm  [0.00 - 18.00] (0=rear, 18=front)")
+    print(f"  Z (arm):    {pos['z']:6.2f} cm  [0.00 - 20.00] (0=down, 20=up)")
+    print(f"\nOrigin (0,0,0) is rear-right corner")
+    print("="*60 + "\n")
+
+def clamp_movement_to_limits(delta_x_cm, delta_y_cm, delta_z_cm):
+    """Clamp desired movement to stay within limits."""
+    pos = get_current_position()
+    
+    # Calculate final positions if movement applied
+    final_x = pos["x"] + delta_x_cm
+    final_y = pos["y"] + delta_y_cm
+    final_z = pos["z"] + delta_z_cm
+    
+    # Clamp and calculate actual allowed movement
+    clamped_x = clamp(final_x, LIMIT_X_MIN, LIMIT_X_MAX)
+    clamped_y = clamp(final_y, LIMIT_Y_MIN, LIMIT_Y_MAX)
+    clamped_z = clamp(final_z, LIMIT_Z_MIN, LIMIT_Z_MAX)
+    
+    actual_delta_x = clamped_x - pos["x"]
+    actual_delta_y = clamped_y - pos["y"]
+    actual_delta_z = clamped_z - pos["z"]
+    
+    # Report if movement was limited
+    if (abs(actual_delta_x - delta_x_cm) > 0.01 or 
+        abs(actual_delta_y - delta_y_cm) > 0.01 or 
+        abs(actual_delta_z - delta_z_cm) > 0.01):
+        print(f"[BOUNDARY] Movement limited:")
+        if abs(actual_delta_x - delta_x_cm) > 0.01:
+            print(f"  X: {delta_x_cm:.2f}cm -> {actual_delta_x:.2f}cm")
+        if abs(actual_delta_y - delta_y_cm) > 0.01:
+            print(f"  Y: {delta_y_cm:.2f}cm -> {actual_delta_y:.2f}cm")
+        if abs(actual_delta_z - delta_z_cm) > 0.01:
+            print(f"  Z: {delta_z_cm:.2f}cm -> {actual_delta_z:.2f}cm")
+    
+    return actual_delta_x, actual_delta_y, actual_delta_z
 
 def scale_intrinsics(K, scale):
     K_scaled = K.copy()
@@ -346,12 +440,15 @@ def select_target_flower(detections, depth_stats_list, frame_width, frame_height
     return None, None
 
 def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
-    """Convert pixel offsets to motor steps."""
+    """Convert pixel offsets to motor steps, respecting boundaries."""
     dx_cm = dx_pixels / PIXELS_PER_CM
     dy_cm = dy_pixels / PIXELS_PER_CM
     
     dx_cm = clamp(dx_cm, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
     dy_cm = clamp(dy_cm, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
+    
+    # Respect boundary limits
+    dx_cm, dy_cm, _ = clamp_movement_to_limits(dx_cm, dy_cm, 0.0)
     
     move_plan = {}
     
@@ -379,16 +476,30 @@ def convert_offsets_to_motor_steps(dx_pixels, dy_pixels):
         capped = clamp(move_plan[k], -MAX_STEPS_PER_CYCLE, MAX_STEPS_PER_CYCLE)
         move_plan[k] = int(capped)
     
+    # Update position tracking
+    if "rails" in move_plan or "main" in move_plan:
+        update_position(delta_x=dx_cm, delta_y=dy_cm)
+    
     return move_plan
 
 def convert_depth_to_arm_steps(depth_m, target_depth_m=0.40):
-    """Convert depth to arm motor steps."""
+    """Convert depth to arm motor steps, respecting boundaries."""
     depth_cm = depth_m * 100
     target_cm = target_depth_m * 100
     
     error_cm = target_cm - depth_cm
     error_cm = clamp(error_cm, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
+    
+    # Respect boundary limits for arm movement
+    _, _, error_cm = clamp_movement_to_limits(0.0, 0.0, error_cm)
+    
     steps = int(error_cm * STEPS_PER_CM_ARM)
+    
+    # Update position tracking
+    if steps != 0:
+        delta_z = error_cm
+        update_position(delta_z=delta_z)
+    
     return steps
 
 # =============================
@@ -429,6 +540,51 @@ def send_motor_command(client_socket, command_dict):
         client_socket.send(data)
     except Exception as e:
         print(f"[Laptop] Error sending command: {e}")
+
+# =============================
+# Pollination Motor Control
+# =============================
+def vibrate_motor(client_socket, duration_ms):
+    """Control vibration motor for specified duration in milliseconds.
+    
+    Args:
+        client_socket: Connected socket to Pi
+        duration_ms: Duration to run vibration motor in milliseconds
+    """
+    motor_command = {"vibrate": duration_ms}
+    print(f"[POLLINATE] Vibrating for {duration_ms}ms")
+    send_motor_command(client_socket, motor_command)
+
+def van_de_graaf_motor(client_socket, duration_ms):
+    """Control van de Graaf generator motor for specified duration in milliseconds.
+    
+    Args:
+        client_socket: Connected socket to Pi
+        duration_ms: Duration to run van de Graaf motor in milliseconds
+    """
+    motor_command = {"van_de_graaf": duration_ms}
+    print(f"[POLLINATE] Running van de Graaf for {duration_ms}ms")
+    send_motor_command(client_socket, motor_command)
+
+def pollinate(client_socket, vibrate_duration_ms=500, van_de_graaf_duration_ms=500, repeat=1):
+    """Pollination sequence combining vibration and van de Graaf motors.
+    
+    Args:
+        client_socket: Connected socket to Pi
+        vibrate_duration_ms: Duration to vibrate in milliseconds
+        van_de_graaf_duration_ms: Duration for van de Graaf in milliseconds
+        repeat: Number of times to repeat the pollination cycle
+    """
+    print(f"[POLLINATE] Starting pollination sequence (x{repeat})")
+    for cycle in range(repeat):
+        print(f"[POLLINATE] Cycle {cycle+1}/{repeat}")
+        # Vibrate first
+        vibrate_motor(client_socket, vibrate_duration_ms)
+        time.sleep(vibrate_duration_ms / 1000.0 + 0.1)  # Wait for vibration to complete
+        # Then run van de Graaf
+        van_de_graaf_motor(client_socket, van_de_graaf_duration_ms)
+        time.sleep(van_de_graaf_duration_ms / 1000.0 + 0.1)  # Wait for van de Graaf to complete
+    print(f"[POLLINATE] Pollination sequence complete")
 
 # =============================
 # Frame Reception Thread
@@ -473,7 +629,17 @@ def demo_mode_worker():
     """Automatic flower detection and tracking demo."""
     global demo_stop_flag, current_frame_left, current_frame_right, demo_mode
     
+    # Reset position to origin at demo start
+    reset_position()
+    print("[DEMO] Position reset to origin (0, 0, 0) - rear-right")
+    print_position()
+    
     frame_count = 0
+    flower_found = False  # Track if we've located a flower
+    consecutive_no_detect = 0  # Track consecutive frames without detection
+    search_direction = 0  # 0=backward, 1=left, 2=right, 3=forward
+    search_frame_counter = 0  # Counter to switch search directions every N frames
+    SEARCH_FRAMES_PER_DIRECTION = 20  # Frames before switching search direction
     
     print("\n[DEMO] Starting automatic flower tracking demo...")
     print("[DEMO] Press Ctrl+C to stop demo mode\n")
@@ -521,9 +687,46 @@ def demo_mode_worker():
             motor_command = {}
             
             if target_det is None:
-                print(f"[DEMO] Frame {frame_count}: Searching for flowers... moving backward")
-                motor_command = {"main": int(0.3 * STEPS_PER_CM)}
+                consecutive_no_detect += 1
+                # If no detection for 5 frames, reset flower_found to search mode
+                if consecutive_no_detect > 5:
+                    flower_found = False
+                
+                if not flower_found:
+                    # Search pattern: cycle through different directions
+                    search_frame_counter += 1
+                    if search_frame_counter >= SEARCH_FRAMES_PER_DIRECTION:
+                        search_frame_counter = 0
+                        search_direction = (search_direction + 1) % 4  # Cycle: 0->1->2->3->0
+                    
+                    # Move in current search direction
+                    if search_direction == 0:
+                        # Move backward
+                        motor_command = {"main": int(0.3 * STEPS_PER_CM)}
+                        direction_name = "backward"
+                    elif search_direction == 1:
+                        # Move left
+                        motor_command = {"rails": int(0.3 * STEPS_PER_CM)}
+                        direction_name = "left"
+                    elif search_direction == 2:
+                        # Move right
+                        motor_command = {"rails": int(-0.3 * STEPS_PER_CM)}
+                        direction_name = "right"
+                    else:  # search_direction == 3
+                        # Move forward
+                        motor_command = {"main": int(-0.3 * STEPS_PER_CM)}
+                        direction_name = "forward"
+                    
+                    if search_frame_counter == 0:
+                        print(f"[DEMO] Frame {frame_count}: Searching {direction_name}...")
+                else:
+                    print(f"[DEMO] Frame {frame_count}: Lost flower (no detect {consecutive_no_detect}/5), staying put...")
+                    motor_command = {}  # Stop moving, just stay in place
             else:
+                consecutive_no_detect = 0  # Reset counter when we detect
+                search_frame_counter = 0  # Reset search counter when flower found
+                flower_found = True
+                
                 x1, y1, x2, y2 = target_det['box']
                 flower_center_x = (x1 + x2) / 2
                 flower_center_y = (y1 + y2) / 2
@@ -532,15 +735,16 @@ def demo_mode_worker():
                 dy = flower_center_y - (h / 2)
                 depth_m = target_depth['median']
                 
-                print(f"[DEMO] Frame {frame_count}: Target at dx={dx:.0f}px, dy={dy:.0f}px, depth={depth_m:.3f}m (conf={target_det['confidence']:.2f})")
+                print(f"[DEMO] Frame {frame_count}: Flower found! dx={dx:.0f}px, dy={dy:.0f}px, depth={depth_m:.3f}m (conf={target_det['confidence']:.2f})")
                 
-                motor_command = convert_offsets_to_motor_steps(dx, dy)
+                # When flower is found, stay in place and only move arm
+                motor_command = {}  # Don't move horizontally/vertically
                 
-                if abs(dx) < 30 and abs(dy) < 30:
-                    arm_steps = convert_depth_to_arm_steps(depth_m, target_depth_m=0.40)
-                    if abs(arm_steps) > 10:
-                        motor_command['arm'] = arm_steps
-                        print(f"[DEMO] Adding arm adjustment: {arm_steps} steps")
+                # Move arm up and down (20 cm range) based on depth
+                arm_steps = convert_depth_to_arm_steps(depth_m, target_depth_m=0.40)
+                if abs(arm_steps) > 2:
+                    motor_command['arm'] = arm_steps
+                    print(f"[DEMO] Arm movement: {arm_steps} steps (20cm range)")
             
             send_motor_command(client_socket, motor_command)
             
@@ -582,7 +786,7 @@ def demo_mode_worker():
                 display_frame_left = cv2.resize(display_frame_left, (w_display, h_display))
                 display_frame_right = cv2.resize(display_frame_right, (w_display, h_display))
                 
-                display_combined = np.hstack([display_frame_left, display_frame_right])
+                display_combined = np.hstack([display_frame_right, display_frame_left])
                 cv2.imshow("DEMO MODE - Automatic Flower Tracking", display_combined)
                 
                 key = cv2.waitKey(1) & 0xFF
@@ -608,32 +812,44 @@ def print_help():
     print("\n" + "="*60)
     print("LAPTOP CLIENT - MANUAL CONTROL MODE")
     print("="*60)
+    print("\nCoordinate System:")
+    print("  Origin (0,0,0) = rear-right corner")
+    print("  X (rails): 0-45 cm (0=right, 45=left)")
+    print("  Y (main):  0-18 cm (0=rear, 18=front)")
+    print("  Z (arm):   0-20 cm (0=down/released, 20=up)")
     print("\nAvailable Commands:")
-    print("  reset                    - Return to home position (all motors to 0)")
+    print("  status                   - Show current position and limits")
+    print("  reset                    - Return to origin (0,0,0) and send reset command")
     print("  move <motor> <steps>     - Move specific motor")
     print("                             Motors: rails, main, arm")
     print("                             Steps: positive or negative integer")
     print("  movecm <motor> <cm>      - Move motor by centimeters (rails/main/arm)")
     print("                             Uses calibration to convert cm -> steps")
+    print("                             Enforces boundary limits")
     print("  arm <steps>              - Shortcut for 'move arm <steps>' (held)")
     print("  release                  - Release all motors (stop holding position)")
     print("  demo                     - Start automatic flower detection demo")
+    print("                             (resets position to origin)")
     print("  stop                     - Stop demo mode")
+    print("  vibrate <ms>             - Run vibration motor for N milliseconds")
+    print("  vdg <ms>        - Run van de Graaf motor for N milliseconds")
+    print("  pollinate [v_ms] [vdg_ms] [repeat]")
+    print("                           - Run pollination sequence")
+    print("                             Default: pollinate 500 500 1")
     print("  help                     - Show this help message")
     print("  quit                     - Exit program")
     print("\nExamples:")
+    print("  status                   - Show current position")
+    print("  reset                    - Go back to origin")
     print("  move rails 100           - Move rails motor 100 steps")
-    print("  move main -50            - Move main motor backward 50 steps")
-    print("  arm 20                   - Move arm up 20 steps")
-    print("  movecm rails 2           - Move rails ~2 cm")
-    print("  movecm arm 0.5           - Move arm ~0.5 cm (held)")
-    print("  release                  - Release all motors after holding")
-    print("  move rails 0             - Stop rails (send 0)")
+    print("  vibrate 500              - Vibrate for 500ms")
+    print("  vdg 300         - Van de Graaf for 300ms")
+    print("  pollinate 500 500 2      - Pollinate 2 cycles (500ms vibrate + 500ms vdg each)")
     print("="*60 + "\n")
 
 def parse_and_execute_command(cmd_input):
     """Parse user command and execute."""
-    global demo_mode, demo_stop_flag
+    global demo_mode, demo_stop_flag, arm_is_at_bottom
     
     cmd_input = cmd_input.strip().lower()
     
@@ -644,11 +860,17 @@ def parse_and_execute_command(cmd_input):
     command = parts[0]
     
     try:
-        if command == "reset":
+        if command == "status":
+            print_position()
+        
+        elif command == "reset":
             print("[COMMAND] Resetting all motors to home position...")
             motor_command = {"rails": 0, "main": 0, "arm": 0}
             send_motor_command(client_socket, motor_command)
-            print("[COMMAND] Reset command sent!")
+            reset_position()
+            arm_is_at_bottom = True
+            print("[COMMAND] Reset command sent! Position reset to origin (0, 0, 0)")
+            print_position()
         
         elif command == "move":
             if len(parts) < 3:
@@ -690,6 +912,23 @@ def parse_and_execute_command(cmd_input):
                 print(f"[ERROR] Invalid cm value: {parts[2]}")
                 return
 
+            # Enforce boundary limits before converting to steps
+            if motor_name == "rails":
+                dist_cm, _, _ = clamp_movement_to_limits(dist_cm, 0.0, 0.0)
+            elif motor_name == "main":
+                _, dist_cm, _ = clamp_movement_to_limits(0.0, dist_cm, 0.0)
+            elif motor_name == "arm":
+                if arm_is_at_bottom and dist_cm > 0:
+                    adjusted_dist_cm = dist_cm + ARM_BOTTOM_OFFSET_CM
+                    print(f"[COMMAND] Arm at bottom, adding {ARM_BOTTOM_OFFSET_CM} cm offset")
+                    print(f"[COMMAND] Adjusted distance: {dist_cm:.2f} cm -> {adjusted_dist_cm:.2f} cm")
+                    dist_cm = adjusted_dist_cm
+                    arm_is_at_bottom = False
+                elif dist_cm < 0:
+                    arm_is_at_bottom = False
+                
+                _, _, dist_cm = clamp_movement_to_limits(0.0, 0.0, dist_cm)
+
             # Use appropriate calibration for each motor
             if motor_name == "arm":
                 steps = int(dist_cm * STEPS_PER_CM_ARM)
@@ -700,8 +939,19 @@ def parse_and_execute_command(cmd_input):
             # Keep arm held after movement
             if motor_name == "arm" and steps != 0:
                 motor_command["_hold_motors"] = ["arm"]
+            
             print(f"[COMMAND] Moving {motor_name} ~{dist_cm:.2f} cm ({steps} steps)")
             send_motor_command(client_socket, motor_command)
+            
+            # Update position manually for direct motor commands
+            if motor_name == "rails":
+                update_position(delta_x=dist_cm)
+            elif motor_name == "main":
+                update_position(delta_y=dist_cm)
+            elif motor_name == "arm":
+                update_position(delta_z=dist_cm)
+            
+            print_position()
             print("[COMMAND] Move command sent!")
         
         elif command == "arm":
@@ -719,6 +969,11 @@ def parse_and_execute_command(cmd_input):
             motor_command = {"arm": steps, "_hold_motors": ["arm"]}
             print(f"[COMMAND] Moving arm for {steps} steps (held)...")
             send_motor_command(client_socket, motor_command)
+            
+            # Update position
+            delta_z = steps / STEPS_PER_CM_ARM
+            update_position(delta_z=delta_z)
+            print_position()
             print("[COMMAND] Arm command sent!")
         
         elif command == "release":
@@ -746,6 +1001,77 @@ def parse_and_execute_command(cmd_input):
             demo_stop_flag = True
             time.sleep(0.5)
             print("[COMMAND] Demo mode stopped")
+            print_position()
+        
+        elif command == "vibrate":
+            if len(parts) < 2:
+                print("[ERROR] Format: vibrate <milliseconds>")
+                print("[ERROR] Example: vibrate 500")
+                return
+            
+            try:
+                duration_ms = int(parts[1])
+                if duration_ms <= 0:
+                    print("[ERROR] Duration must be positive")
+                    return
+            except ValueError:
+                print(f"[ERROR] Invalid duration value: {parts[1]}")
+                return
+            
+            vibrate_motor(client_socket, duration_ms)
+            print("[COMMAND] Vibrate command sent!")
+        
+        elif command == "vdg":
+            if len(parts) < 2:
+                print("[ERROR] Format: vdg <milliseconds>")
+                print("[ERROR] Example: vdg 500")
+                return
+            
+            try:
+                duration_ms = int(parts[1])
+                if duration_ms <= 0:
+                    print("[ERROR] Duration must be positive")
+                    return
+            except ValueError:
+                print(f"[ERROR] Invalid duration value: {parts[1]}")
+                return
+            
+            van_de_graaf_motor(client_socket, duration_ms)
+            print("[COMMAND] Van de Graaf command sent!")
+        
+        elif command == "pollinate":
+            # Parse optional parameters: pollinate [vibrate_ms] [van_de_graaf_ms] [repeat]
+            vibrate_ms = 500
+            van_de_graaf_ms = 500
+            repeat = 1
+            
+            if len(parts) > 1:
+                try:
+                    vibrate_ms = int(parts[1])
+                except ValueError:
+                    print(f"[ERROR] Invalid vibrate duration: {parts[1]}")
+                    return
+            
+            if len(parts) > 2:
+                try:
+                    van_de_graaf_ms = int(parts[2])
+                except ValueError:
+                    print(f"[ERROR] Invalid van_de_graaf duration: {parts[2]}")
+                    return
+            
+            if len(parts) > 3:
+                try:
+                    repeat = int(parts[3])
+                except ValueError:
+                    print(f"[ERROR] Invalid repeat count: {parts[3]}")
+                    return
+            
+            if vibrate_ms <= 0 or van_de_graaf_ms <= 0 or repeat <= 0:
+                print("[ERROR] All parameters must be positive")
+                return
+            
+            pollinate(client_socket, vibrate_ms, van_de_graaf_ms, repeat)
+            print("[COMMAND] Pollinate command sent!")
         
         elif command == "help":
             print_help()
@@ -809,6 +1135,10 @@ def main():
         display_thread_obj = threading.Thread(target=display_thread, daemon=True)
         display_thread_obj.start()
         print("[Laptop] Display thread started (manual view)")
+    
+    # Initialize position to origin
+    reset_position()
+    print("\n[Laptop] Position initialized to origin (0, 0, 0) - rear-right")
     
     print_help()
     
