@@ -13,6 +13,9 @@ from gpiozero import Motor
 import busio
 import board
 from adafruit_motorkit import MotorKit
+import cv2
+
+
 i2c = busio.I2C(board.SCL, board.SDA)
 kit1 = MotorKit(i2c=i2c, address=0x60)
 
@@ -152,14 +155,44 @@ def VanDeGraaf_move(times):
 
     time.sleep(times)
     motor.forward()  # stops motor
-def DCMotor(times):
-    """
-    Move the dc motor
-    """
-    kit2.motor4.throttle =  1 # starts motor forward at full speed
 
-    time.sleep(times)
-    kit2.motor4.throttle = 0.0  # stops motor
+def DetectBoundary():
+    """
+    Use vision to detect red border and stop movement
+    Border is possible at top, bottom, left, right else return none
+    """
+    cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+    ret, frame = cap.read()
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    # Define range for red color in HSV
+    lower_red = np.array([0, 100, 100])
+    upper_red = np.array([10, 255, 255])
+    mask1 = cv2.inRange(hsv, lower_red, upper_red) 
+
+    # detect red areas
+    red_area = cv2.countNonZero(mask1)
+    height, width, _ = frame.shape
+    if red_area > 5000:  # threshold for detection
+        # Check positions
+        if np.any(mask1[0, :]):  # Top border
+            cap.release()
+            return "top"
+        elif np.any(mask1[-1, :]):  # Bottom border
+            cap.release()
+            return "bottom"
+        elif np.any(mask1[:, 0]):  # Left border
+            cap.release()
+            return "left"
+        elif np.any(mask1[:, -1]):  # Right border
+            cap.release()
+            return "right"
+    cap.release()
+    return None
+    
+
+
+
 
 
 if __name__ == "__main__":
@@ -171,23 +204,23 @@ if __name__ == "__main__":
         10, 0.02, [kit1.stepper1], False))
     thread3 = threading.Thread(target=move_cm, args=(
         10, 0.02, [kit1.stepper2], False))
-    thread4 = threading.Thread(target=VanDeGraaf_move, args=(20,))
+    thread4 = threading.Thread(target=VanDeGraaf_move, args=(5,))
     thread5 = threading.Thread(target=shake, args=(5,))
-    thread6 = threading.Thread(target=DCMotor, args=(0.1,))
+
 
     # thread1.start()
     
     # thread2.start()
     # thread3.start()
-    thread4.start()
+    # thread4.start()
     # thread5.start()
-    # thread6.start()
 
     
     # thread3.join()
     # thread2.join()
-    thread4.join()
+    # thread4.join()
     # thread5.join()
     # thread1.join()
-    # thread6.start()
 
+    while not DetectBoundary():
+        move_cm(1, 0.02, [kit1.stepper1, kit1.stepper2], False) 
