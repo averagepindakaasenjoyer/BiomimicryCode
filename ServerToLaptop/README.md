@@ -182,6 +182,7 @@ MAX_CM_PER_CYCLE = 10.0
 1. **On Raspberry Pi:**
    ```bash
    cd ServerToLaptop
+   source ~/Demo/bin/activate
    python pi_server.py
    # Output: "[Pi] Waiting for connection on port 8000..."
    ```

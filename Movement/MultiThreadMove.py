@@ -7,13 +7,20 @@ from adafruit_motorkit import MotorKit
 import busio
 import board
 from adafruit_motorkit import MotorKit
-
+import gpiozero as GPIO                                
+from adafruit_motorkit import MotorKit
+from gpiozero import Motor
+import busio
+import board
+from adafruit_motorkit import MotorKit
 i2c = busio.I2C(board.SCL, board.SDA)
 kit1 = MotorKit(i2c=i2c, address=0x60)
 
 
 # kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
+i2c = busio.I2C(board.SCL, board.SDA)
+motor = Motor(forward=17, backward=27)
 
 
 motor_dict = {
@@ -128,35 +135,48 @@ def reset_robot_position():
     release_all_motors()
     print("Robot position reset complete.")
 
+def shake(times):
+    """
+    shake the vibration motor for a set amount of time
+    """
+    kit2.motor3.throttle = 1.0  # starts motor forward at full speed
+
+    time.sleep(times)
+    kit2.motor3.throttle = 0.0  # stops motor
+
+def VanDeGraaf_move(times):
+    """
+    move the Van De Graaf motor for a set amount of time
+    """
+    motor.stop()  # stops motor
+
+    time.sleep(times)
+    motor.forward()  # stops motor
+
 
 if __name__ == "__main__":
     # Example usage: Move forward 20 cm and right 10 cm simultaneously
     # ARM MIOVES UP 45 CM
     thread1 = threading.Thread(target=move_cm, args=(
-        60, 0, [kit2.stepper1], True))
+        -40, 0, [kit2.stepper1], True))
     thread2 = threading.Thread(target=move_cm, args=(
         10, 0.02, [kit1.stepper1], False))
     thread3 = threading.Thread(target=move_cm, args=(
         10, 0.02, [kit1.stepper2], False))
+    thread4 = threading.Thread(target=VanDeGraaf_move, args=(5,))
+    thread5 = threading.Thread(target=shake, args=(5,))
+
 
     thread1.start()
-    thread2.start()
-    thread3.start()
+    
+    # thread2.start()
+    # thread3.start()
+    thread4.start()
+    # thread5.start()
 
+    
+    # thread3.join()
+    # thread2.join()
+    thread4.join()
+    # thread5.join()
     thread1.join()
-    thread3.join()
-    thread2.join()
-
-    thread1 = threading.Thread(target=move_cm, args=(
-        -60, 0, [kit2.stepper1], True))
-    thread2 = threading.Thread(target=move_cm, args=(
-        -10, 0.02, [kit1.stepper1], False))
-    thread3 = threading.Thread(target=move_cm, args=(
-        -10, 0.02, [kit1.stepper2], False))
-    thread1.start()
-    thread2.start()
-    thread3.start()
-
-    thread1.join()
-    thread3.join()
-    thread2.join()
