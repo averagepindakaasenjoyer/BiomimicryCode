@@ -46,6 +46,11 @@ SHOW_DEBUG = True
 DISPLAY_WIDTH = 1280
 DISPLAY_HEIGHT = 720
 
+# Camera orientation settings
+SWAP_CAMERAS = True  # Set to True if cameras are mounted upside-down/rotated
+ROTATE_LEFT = 0 if SWAP_CAMERAS else 180    # Rotation for left camera in degrees
+ROTATE_RIGHT = 180 if SWAP_CAMERAS else 0   # Rotation for right camera in degrees
+
 # =============================
 # Motor Parameters
 # =============================
@@ -156,6 +161,10 @@ def display_thread():
 
             display_frame_left = frame_left.copy()
             display_frame_right = frame_right.copy()
+            
+            # Apply rotation if configured
+            display_frame_left = rotate_frame(display_frame_left, ROTATE_LEFT)
+            display_frame_right = rotate_frame(display_frame_right, ROTATE_RIGHT)
 
             cv2.putText(display_frame_left, "Left Camera", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
@@ -253,6 +262,19 @@ def clamp_movement_to_limits(delta_x_cm, delta_y_cm, delta_z_cm):
             print(f"  Z: {delta_z_cm:.2f}cm -> {actual_delta_z:.2f}cm")
     
     return actual_delta_x, actual_delta_y, actual_delta_z
+
+def rotate_frame(frame, rotation_degrees):
+    """Rotate frame by specified degrees (0, 90, 180, 270)."""
+    if rotation_degrees == 0:
+        return frame
+    elif rotation_degrees == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    elif rotation_degrees == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    elif rotation_degrees == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    else:
+        return frame
 
 def scale_intrinsics(K, scale):
     K_scaled = K.copy()
@@ -428,7 +450,7 @@ def select_target_flower(detections, depth_stats_list, frame_width, frame_height
         dist_from_center = np.sqrt((center_x - frame_center_x)**2 + (center_y - frame_center_y)**2)
         
         depth = depth_stats['median']
-        score = depth * 0.7 + dist_from_center * 0.0003
+        score = depth * 0.01 + dist_from_center * 0.9
         
         if score < best_score:
             best_score = score
@@ -634,14 +656,31 @@ def demo_mode_worker():
     print("[DEMO] Position reset to origin (0, 0, 0) - rear-right")
     print_position()
     
+    # Initialize arm: release and move up 50cm
+    print("[DEMO] Initializing arm: releasing and moving up 50cm...")
+    arm_release_steps = int(50 * STEPS_PER_CM_ARM)  # Move up 50cm
+    send_motor_command(client_socket, {'arm': arm_release_steps, '_hold_motors': ['arm']})
+    time.sleep(1.0)  # Wait for arm to reach position
+    
     frame_count = 0
     flower_found = False  # Track if we've located a flower
     consecutive_no_detect = 0  # Track consecutive frames without detection
-    search_direction = 0  # 0=backward, 1=left, 2=right, 3=forward
-    search_frame_counter = 0  # Counter to switch search directions every N frames
-    SEARCH_FRAMES_PER_DIRECTION = 20  # Frames before switching search direction
+    
+    # Square search pattern waypoints: (Y, X) in cm
+    # Start (0,0) → (18,45) → (0,45) → (18,0) → back to (0,0)
+    search_waypoints = [
+        (18, 45),   # Front-left corner
+        (0, 45),    # Front-right corner
+        (18, 0),    # Rear-left corner
+        (0, 0),     # Rear-right corner (start)
+    ]
+    current_waypoint_idx = 0
+    target_waypoint = search_waypoints[current_waypoint_idx]
+    
+    saved_position = None  # Position before moving toward flower
     
     print("\n[DEMO] Starting automatic flower tracking demo...")
+    print("[DEMO] Square search pattern: (0,0) → (18,45) → (0,45) → (18,0) → (0,0)")
     print("[DEMO] Press Ctrl+C to stop demo mode\n")
     
     try:
@@ -693,39 +732,56 @@ def demo_mode_worker():
                     flower_found = False
                 
                 if not flower_found:
-                    # Search pattern: cycle through different directions
-                    search_frame_counter += 1
-                    if search_frame_counter >= SEARCH_FRAMES_PER_DIRECTION:
-                        search_frame_counter = 0
-                        search_direction = (search_direction + 1) % 4  # Cycle: 0->1->2->3->0
+                    # Execute waypoint-based square search pattern
+                    pos = get_current_position()
+                    target_y, target_x = target_waypoint
                     
-                    # Move in current search direction
-                    if search_direction == 0:
-                        # Move backward
-                        motor_command = {"main": int(0.3 * STEPS_PER_CM)}
-                        direction_name = "backward"
-                    elif search_direction == 1:
-                        # Move left
-                        motor_command = {"rails": int(0.3 * STEPS_PER_CM)}
-                        direction_name = "left"
-                    elif search_direction == 2:
-                        # Move right
-                        motor_command = {"rails": int(-0.3 * STEPS_PER_CM)}
-                        direction_name = "right"
-                    else:  # search_direction == 3
-                        # Move forward
-                        motor_command = {"main": int(-0.3 * STEPS_PER_CM)}
-                        direction_name = "forward"
+                    # Move toward current waypoint
+                    dx_to_waypoint = target_x - pos["x"]
+                    dy_to_waypoint = target_y - pos["y"]
                     
-                    if search_frame_counter == 0:
-                        print(f"[DEMO] Frame {frame_count}: Searching {direction_name}...")
+                    # If reached waypoint (within 1cm tolerance), move to next
+                    if abs(dx_to_waypoint) < 1.0 and abs(dy_to_waypoint) < 1.0:
+                        current_waypoint_idx = (current_waypoint_idx + 1) % len(search_waypoints)
+                        target_waypoint = search_waypoints[current_waypoint_idx]
+                        target_y, target_x = target_waypoint
+                        dx_to_waypoint = target_x - pos["x"]
+                        dy_to_waypoint = target_y - pos["y"]
+                        print(f"[DEMO] Frame {frame_count}: Reached waypoint, moving to next ({target_y:.1f}, {target_x:.1f})")
+                    
+                    # Move toward waypoint (small steps each frame)
+                    move_step_cm = 0.3
+                    if abs(dx_to_waypoint) > move_step_cm or abs(dy_to_waypoint) > move_step_cm:
+                        # Normalize direction
+                        dist = np.sqrt(dx_to_waypoint**2 + dy_to_waypoint**2)
+                        dx_norm = (dx_to_waypoint / dist) * move_step_cm
+                        dy_norm = (dy_to_waypoint / dist) * move_step_cm
+                        
+                        move_plan = convert_offsets_to_motor_steps(dx_norm * PIXELS_PER_CM, dy_norm * PIXELS_PER_CM)
+                        motor_command = move_plan if move_plan else {}
                 else:
-                    print(f"[DEMO] Frame {frame_count}: Lost flower (no detect {consecutive_no_detect}/5), staying put...")
-                    motor_command = {}  # Stop moving, just stay in place
+                    print(f"[DEMO] Frame {frame_count}: Lost flower (no detect {consecutive_no_detect}/5), moving back to waypoint...")
+                    # Move back toward last saved waypoint position
+                    pos = get_current_position()
+                    if saved_position:
+                        dx_to_saved = saved_position["x"] - pos["x"]
+                        dy_to_saved = saved_position["y"] - pos["y"]
+                        move_plan = convert_offsets_to_motor_steps(dx_to_saved * PIXELS_PER_CM, dy_to_saved * PIXELS_PER_CM)
+                        motor_command = move_plan if move_plan else {}
+                    else:
+                        motor_command = {}
+                    
+                    # Send the movement command for waypoint search
+                    if motor_command:
+                        send_motor_command(client_socket, motor_command)
             else:
                 consecutive_no_detect = 0  # Reset counter when we detect
-                search_frame_counter = 0  # Reset search counter when flower found
                 flower_found = True
+                
+                # Save current position before moving toward flower
+                if saved_position is None:
+                    saved_position = get_current_position().copy()
+                    print(f"[DEMO] Position saved: ({saved_position['y']:.2f}, {saved_position['x']:.2f})")
                 
                 x1, y1, x2, y2 = target_det['box']
                 flower_center_x = (x1 + x2) / 2
@@ -737,16 +793,68 @@ def demo_mode_worker():
                 
                 print(f"[DEMO] Frame {frame_count}: Flower found! dx={dx:.0f}px, dy={dy:.0f}px, depth={depth_m:.3f}m (conf={target_det['confidence']:.2f})")
                 
-                # When flower is found, stay in place and only move arm
-                motor_command = {}  # Don't move horizontally/vertically
+                # Preview how much we'd need to move to center the flower (log only, no movement)
+                dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
+                dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
+                dx_cm_allowed, dy_cm_allowed, _ = clamp_movement_to_limits(dx_cm_raw, dy_cm_raw, 0.0)
+                move_plan_preview = {}
+                if abs(dx_cm_allowed) >= 0.5:
+                    entries = direction_dict["left"] if dx_cm_allowed > 0 else direction_dict["right"]
+                    steps_for_cm = abs(dx_cm_allowed) * STEPS_PER_CM * scale_move
+                    for motor_name, multiplier in entries:
+                        move_plan_preview[motor_name] = move_plan_preview.get(motor_name, 0) + int(multiplier * steps_for_cm)
+                if abs(dy_cm_allowed) >= 0.5:
+                    entries = direction_dict["rear"] if dy_cm_allowed > 0 else direction_dict["front"]
+                    steps_for_cm = abs(dy_cm_allowed) * STEPS_PER_CM * scale_move
+                    for motor_name, multiplier in entries:
+                        move_plan_preview[motor_name] = move_plan_preview.get(motor_name, 0) + int(multiplier * steps_for_cm)
+                rails_steps_log = move_plan_preview.get("rails", 0)
+                main_steps_log = move_plan_preview.get("main", 0)
+                print(f"[DEMO] Move preview (not executed): dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm | rails={rails_steps_log} steps, main={main_steps_log} steps")
+
+                # Execute a small movement toward the flower center
+                move_plan = convert_offsets_to_motor_steps(dx, dy)
+                if move_plan:
+                    print(f"[DEMO] Executing move toward flower: {move_plan}")
+                    send_motor_command(client_socket, move_plan)
+                    time.sleep(0.3)  # Short wait for movement to complete
+                else:
+                    # If no movement needed (already centered), proceed to arm down
+                    print(f"[DEMO] Already centered on flower, proceeding with arm down")
                 
-                # Move arm up and down (20 cm range) based on depth
-                arm_steps = convert_depth_to_arm_steps(depth_m, target_depth_m=0.40)
-                if abs(arm_steps) > 2:
-                    motor_command['arm'] = arm_steps
-                    print(f"[DEMO] Arm movement: {arm_steps} steps (20cm range)")
-            
-            send_motor_command(client_socket, motor_command)
+                # Always move arm down 30cm when flower detected
+                arm_steps = int(-30 * STEPS_PER_CM_ARM)  # Move down 30cm
+                arm_command = {'arm': arm_steps, '_hold_motors': ['arm']}  # Keep arm powered to hold position
+                print(f"[DEMO] Arm movement: {arm_steps} steps (moving down 30cm to probe flower)")
+                
+                send_motor_command(client_socket, arm_command)
+                time.sleep(0.5)  # Wait for arm to reach flower
+                
+                # Pollinate the flower
+                pollinate(client_socket, vibrate_duration_ms=500, van_de_graaf_duration_ms=500, repeat=1)
+                
+                # Move arm back up 30cm
+                arm_up_steps = int(30 * STEPS_PER_CM_ARM)  # Move up 30cm
+                arm_command_up = {'arm': arm_up_steps, '_hold_motors': ['arm']}  # Keep arm held after retract
+                send_motor_command(client_socket, arm_command_up)
+                print(f"[DEMO] Arm retracted: {arm_up_steps} steps (moving up 30cm)")
+                time.sleep(0.5)  # Wait for arm to retract
+                
+                # Move back to saved position
+                if saved_position:
+                    pos = get_current_position()
+                    dx_to_saved = saved_position["x"] - pos["x"]
+                    dy_to_saved = saved_position["y"] - pos["y"]
+                    print(f"[DEMO] Moving back to saved position: ({saved_position['y']:.2f}, {saved_position['x']:.2f})")
+                    move_plan = convert_offsets_to_motor_steps(dx_to_saved * PIXELS_PER_CM, dy_to_saved * PIXELS_PER_CM)
+                    if move_plan:
+                        send_motor_command(client_socket, move_plan)
+                        time.sleep(0.5)
+                    saved_position = None  # Clear saved position for next flower
+                
+                # Don't send empty command at the end of frame when flower detected
+                time.sleep(0.05)
+                continue
             
             # Display
             if SHOW_DEBUG:
@@ -780,6 +888,10 @@ def demo_mode_worker():
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 cv2.putText(display_frame_right, "[DEMO] Right Camera (Reference)", (10, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                
+                # Apply rotation if configured
+                display_frame_left = rotate_frame(display_frame_left, ROTATE_LEFT)
+                display_frame_right = rotate_frame(display_frame_right, ROTATE_RIGHT)
                 
                 h_display = DISPLAY_HEIGHT // 2
                 w_display = DISPLAY_WIDTH // 2
@@ -843,7 +955,7 @@ def print_help():
     print("  reset                    - Go back to origin")
     print("  move rails 100           - Move rails motor 100 steps")
     print("  vibrate 500              - Vibrate for 500ms")
-    print("  vdg 300         - Van de Graaf for 300ms")
+    print("  vdg 300                  - Van de Graaf for 300ms")
     print("  pollinate 500 500 2      - Pollinate 2 cycles (500ms vibrate + 500ms vdg each)")
     print("="*60 + "\n")
 
@@ -998,6 +1110,8 @@ def parse_and_execute_command(cmd_input):
                 return
             
             print("[COMMAND] Stopping demo mode...")
+            motor_command = {"_action": "release_all"}
+            send_motor_command(client_socket, motor_command)
             demo_stop_flag = True
             time.sleep(0.5)
             print("[COMMAND] Demo mode stopped")
