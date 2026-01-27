@@ -14,6 +14,7 @@ import threading
 import board
 from adafruit_motor import stepper
 from adafruit_motorkit import MotorKit
+from gpiozero import Motor
 
 # Network configuration
 PORT = 8000
@@ -29,6 +30,9 @@ print("[Pi] Initializing motor controllers...")
 kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
 
+# GPIO motor for Van de Graaf (pins 17 and 27)
+van_de_graaf_gpio_motor = Motor(forward=17, backward=27)
+
 motor_dict = {
     "rails": kit1.stepper1,
     "main": kit1.stepper2,
@@ -37,17 +41,18 @@ motor_dict = {
 
 # Continuous motors (throttle-based, for timing-controlled operations)
 continuous_motor_dict = {
-    "vibrate": kit2.motor3,      # Vibration motor
-    "van_de_graaf": kit2.motor4,  # Van de Graaf generator motor
+    "vibrate": kit2.motor3,  # Vibration motor on kit2.motor3
 }
+
+# Van de Graaf uses separate GPIO motor
+van_de_graaf_motor = van_de_graaf_gpio_motor
 
 # Motor step delay
 STEP_DELAY = 0.01
 STEP_DELAY_ARM = 0.01
 
-# Vibration and van de Graaf throttle settings
-VIBRATE_THROTTLE = 1.0      # Full speed for vibration motor
-VAN_DE_GRAAF_THROTTLE = 1.0 # Full speed for van de Graaf motor
+# Vibration throttle setting
+VIBRATE_THROTTLE = 1.0  # Full speed for vibration motor
 
 # =============================
 # Motor Control Functions
@@ -109,6 +114,26 @@ def continuous_motor_worker(motor_obj, motor_name, duration_ms, throttle=1.0):
         except Exception:
             pass
 
+def van_de_graaf_worker(duration_ms):
+    """Run Van de Graaf GPIO motor for specified duration in milliseconds.
+    
+    Args:
+        duration_ms: Duration to run motor in milliseconds
+    """
+    duration_s = duration_ms / 1000.0
+    try:
+        van_de_graaf_motor.stop()  # Ensure stopped first
+        time.sleep(0.1)  # Brief delay
+        van_de_graaf_motor.forward()  # Start motor
+        time.sleep(duration_s)
+    except Exception as e:
+        print(f"[Pi] Van de Graaf motor error: {e}")
+    finally:
+        try:
+            van_de_graaf_motor.stop()  # Stop motor
+        except Exception:
+            pass
+
 def execute_motor_command(command_dict):
     """
     Execute motor movements based on command dictionary.
@@ -167,8 +192,18 @@ def execute_motor_command(command_dict):
             t.daemon = True
             threads.append(t)
             t.start()
+        elif motor_name == "van_de_graaf":
+            # Van de Graaf GPIO motor (special case)
+            duration_ms = value
+            if duration_ms <= 0:
+                continue
+            
+            t = threading.Thread(target=van_de_graaf_worker, args=(duration_ms,))
+            t.daemon = True
+            threads.append(t)
+            t.start()
         else:
-            # Check if this is a continuous motor
+            # Check if this is a continuous motor (throttle-based)
             cont_motor_obj = continuous_motor_dict.get(motor_name)
             if cont_motor_obj is not None:
                 # Continuous motor (value is duration in milliseconds)
@@ -177,7 +212,7 @@ def execute_motor_command(command_dict):
                     continue
                 
                 # Get appropriate throttle
-                throttle = VIBRATE_THROTTLE if motor_name == "vibrate" else VAN_DE_GRAAF_THROTTLE
+                throttle = VIBRATE_THROTTLE
                 
                 t = threading.Thread(target=continuous_motor_worker, args=(cont_motor_obj, motor_name, duration_ms, throttle))
                 t.daemon = True
