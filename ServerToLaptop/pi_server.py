@@ -286,70 +286,77 @@ def main():
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.bind(('0.0.0.0', PORT))
     server_socket.listen(1)
-    print(f"[Pi] Waiting for connection on port {PORT}...")
-    
-    conn, addr = server_socket.accept()
-    print(f"[Pi] Connected to {addr}")
-    
-    # Open stereo cameras
-    print(f"[Pi] Opening cameras {CAM_LEFT} and {CAM_RIGHT}...")
-    cap_left = cv2.VideoCapture(CAM_LEFT)
-    cap_right = cv2.VideoCapture(CAM_RIGHT)
-    
-    if not cap_left.isOpened() or not cap_right.isOpened():
-        print("[Pi] ERROR: Could not open cameras!")
-        conn.close()
-        server_socket.close()
-        return
-    
-    # Set camera properties
-    for cap in [cap_left, cap_right]:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-    
-    print("[Pi] Cameras initialized successfully")
     
     try:
-        frame_count = 0
-        while True:
-            # Capture stereo frames
-            ret_l, frame_left = cap_left.read()
-            ret_r, frame_right = cap_right.read()
+        while True:  # Loop to handle multiple connections
+            print(f"[Pi] Waiting for connection on port {PORT}...")
             
-            if not ret_l or not ret_r:
-                print("[Pi] Failed to read frames")
-                time.sleep(0.1)
-                continue
+            conn, addr = server_socket.accept()
+            print(f"[Pi] Connected to {addr}")
             
-            # Send frames to laptop
+            # Open stereo cameras
+            print(f"[Pi] Opening cameras {CAM_LEFT} and {CAM_RIGHT}...")
+            cap_left = cv2.VideoCapture(CAM_LEFT)
+            cap_right = cv2.VideoCapture(CAM_RIGHT)
+            
+            if not cap_left.isOpened() or not cap_right.isOpened():
+                print("[Pi] ERROR: Could not open cameras!")
+                conn.close()
+                continue  # Wait for next connection
+            
+            # Set camera properties
+            for cap in [cap_left, cap_right]:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+            
+            print("[Pi] Cameras initialized successfully")
+            
             try:
-                send_stereo_frames(conn, frame_left, frame_right)
-                frame_count += 1
-                if frame_count % 30 == 0:
-                    print(f"[Pi] Sent {frame_count} frame pairs")
+                frame_count = 0
+                while True:
+                    # Capture stereo frames
+                    ret_l, frame_left = cap_left.read()
+                    ret_r, frame_right = cap_right.read()
+                    
+                    if not ret_l or not ret_r:
+                        print("[Pi] Failed to read frames")
+                        time.sleep(0.1)
+                        continue
+                    
+                    # Send frames to laptop
+                    try:
+                        send_stereo_frames(conn, frame_left, frame_right)
+                        frame_count += 1
+                        if frame_count % 30 == 0:
+                            print(f"[Pi] Sent {frame_count} frame pairs")
+                    except Exception as e:
+                        print(f"[Pi] Error sending frames: {e}")
+                        print("[Pi] Connection broken, cleaning up...")
+                        break
+                    
+                    # Receive and execute motor commands
+                    command = receive_motor_command(conn)
+                    if command:
+                        execute_motor_command(command)
+                    
+                    time.sleep(0.01)  # Small delay to prevent overwhelming the network
+            
             except Exception as e:
-                print(f"[Pi] Error sending frames: {e}")
-                break
-            
-            # Receive and execute motor commands
-            command = receive_motor_command(conn)
-            if command:
-                execute_motor_command(command)
-            
-            time.sleep(0.01)  # Small delay to prevent overwhelming the network
+                print(f"[Pi] Error during connection: {e}")
+            finally:
+                # Cleanup for this connection
+                cap_left.release()
+                cap_right.release()
+                conn.close()
+                release_all_motors()
+                print("[Pi] Connection cleanup complete")
     
     except KeyboardInterrupt:
         print("[Pi] Interrupted by user")
-    except Exception as e:
-        print(f"[Pi] Error: {e}")
     finally:
-        cap_left.release()
-        cap_right.release()
-        conn.close()
         server_socket.close()
-        release_all_motors()
-        print("[Pi] Cleanup complete")
+        print("[Pi] Server shutdown complete")
 
 if __name__ == "__main__":
     main()
