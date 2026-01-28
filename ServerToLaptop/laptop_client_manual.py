@@ -95,8 +95,14 @@ direction_dict = {
 
 
 # Debug mode
-DEBUG_MOVEMENT = False  # Set to True to stop at flower and display movement calculations
+DEBUG_MOVEMENT = True  # Set to True to stop at flower and display movement calculations
 DEBUG_SKIP_DEPTH = False  # Set to True to skip depth estimation and detection
+
+# =============================
+# Visited Flowers Tracking
+# =============================
+visited_flowers = []  # list of dicts: {"x": ..., "y": ..., "timestamp": ...}
+FLOWER_VISIT_RADIUS_CM = 5.0  # Minimum distance (cm) to consider a flower as "new"
 
 # =============================
 # Load Models and Calibration
@@ -149,8 +155,10 @@ LIMIT_Y_MIN = 0.0       # Rearmost position
 LIMIT_Y_MAX = 18.0      # Frontmost position (main: 18 cm)
 LIMIT_Z_MIN = 0.0       # Bottom/released position
 LIMIT_Z_MAX = 20.0      # Highest position (arm: 20 cm)
-OFFSET_X_CM = 0       # Offset for x (if any)
-OFFSET_Y_CM = 0       # Offset for y (if any)
+# Arm tip offset from camera center (measured in pixels, converted to cm)
+# Arm tip is at -130px left, +150px down from camera center
+OFFSET_X_CM = 5.03      # Compensate for arm tip being left of center (move right)
+OFFSET_Y_CM = 5.81     # Compensate for arm tip being below center (move backward)
 
 # =============================
 # Display Thread
@@ -290,6 +298,24 @@ def rotate_frame(frame, rotation_degrees):
         return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
     else:
         return frame
+
+def is_flower_already_visited(x, y):
+    """Check if a flower at (x, y) world coordinates has already been visited."""
+    for f in visited_flowers:
+        dist = np.hypot(f["x"] - x, f["y"] - y)
+        if dist < FLOWER_VISIT_RADIUS_CM:
+            return True
+    return False
+
+def mark_flower_as_visited(x, y):
+    """Mark a flower as visited at world coordinates (x, y)."""
+    visited_flowers.append({
+        "x": x,
+        "y": y,
+        "timestamp": time.time()
+    })
+    print(f"[DEMO] Flower marked as visited at world position ({x:.2f}, {y:.2f})")
+    print(f"[DEMO] Total visited flowers: {len(visited_flowers)}")
 
 def scale_intrinsics(K, scale):
     K_scaled = K.copy()
@@ -684,7 +710,7 @@ def frame_reception_thread():
 # =============================
 def demo_mode_worker():
     """Automatic flower detection and tracking demo."""
-    global demo_stop_flag, current_frame_left, current_frame_right, demo_mode, OFFSET_X_CM, OFFSET_Y_CM
+    global demo_stop_flag, current_frame_left, current_frame_right, demo_mode, OFFSET_X_CM, OFFSET_Y_CM, DEBUG_MOVEMENT
     
     # Reset position to origin at demo start
     reset_position()
@@ -835,6 +861,18 @@ def demo_mode_worker():
                 dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_X_CM
                 dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_Y_CM
                 dx_cm_allowed, dy_cm_allowed, _ = clamp_movement_to_limits(dx_cm_raw, dy_cm_raw, 0.0)
+                
+                # Check if this flower has already been visited
+                pos = get_current_position()
+                flower_world_x = pos["x"] + dx_cm_allowed
+                flower_world_y = pos["y"] + dy_cm_allowed
+                
+                if is_flower_already_visited(flower_world_x, flower_world_y):
+                    print(f"[DEMO] Frame {frame_count}: Flower already visited at ({flower_world_x:.2f}, {flower_world_y:.2f}) — ignoring")
+                    target_det = None
+                    target_depth = None
+                    continue
+                
                 move_plan_preview = {}
                 if abs(dx_cm_allowed) >= 0.1:
                     entries = direction_dict["left"] if dx_cm_allowed > 0 else direction_dict["right"]
@@ -850,16 +888,103 @@ def demo_mode_worker():
                 main_steps_log = move_plan_preview.get("main", 0)
                 
                 if DEBUG_MOVEMENT:
-                    # Debug mode: stop and display info
+                    # Debug mode: show visual and stop for inspection
+                    # Display debug visualization
+                    if SHOW_DEBUG:
+                        display_frame_left = frame_left.copy()
+                        display_frame_right = frame_right.copy()
+                        
+                        for det, depth_stats in zip(detections, depth_stats_list):
+                            x1, y1, x2, y2 = det['box']
+                            is_target = (det == target_det)
+                            color = (0, 255, 0) if is_target else (128, 128, 128)
+                            thickness = 3 if is_target else 1
+                            
+                            cv2.rectangle(display_frame_left, (x1, y1), (x2, y2), color, thickness)
+                            
+                            if depth_stats:
+                                label = f"{det['confidence']:.2f} | {depth_stats['median']:.2f}m"
+                                cv2.putText(display_frame_left, label, (x1, y1 - 10),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        
+                        cv2.line(display_frame_left, (w//2 - 20, h//2), (w//2 + 20, h//2), (255, 0, 0), 2)
+                        cv2.line(display_frame_left, (w//2, h//2 - 20), (w//2, h//2 + 20), (255, 0, 0), 2)
+                        
+                        if target_det:
+                            x1, y1, x2, y2 = target_det['box']
+                            target_x = int((x1 + x2) / 2)
+                            target_y = int((y1 + y2) / 2)
+                            cv2.line(display_frame_left, (w//2, h//2), (target_x, target_y), (0, 255, 255), 2)
+                            cv2.circle(display_frame_left, (target_x, target_y), 10, (0, 255, 0), -1)
+                        
+                        # Draw arm tip position marker (-130px left, +150px down from center)
+                        arm_tip_x = int(w//2 - 130)
+                        arm_tip_y = int(h//2 + 150)
+                        if 0 <= arm_tip_x < w and 0 <= arm_tip_y < h:
+                            cv2.circle(display_frame_left, (arm_tip_x, arm_tip_y), 8, (200, 0, 200), 2)  # Magenta circle for arm tip
+                            cv2.putText(display_frame_left, "ARM", (arm_tip_x-15, arm_tip_y-15),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 0, 200), 2)
+                            # Draw line from arm tip to flower center
+                            if target_det:
+                                cv2.line(display_frame_left, (arm_tip_x, arm_tip_y), (target_x, target_y), (100, 200, 255), 2)
+                        
+                        # Add debug info to display
+                        pos = get_current_position()
+                        # Line 1: Flower detected at this position
+                        cv2.putText(display_frame_left, f"FLOWER: dx={dx:.0f}px, dy={dy:.0f}px", (10, 50),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                        # Line 2: Required movement without arm offset
+                        cv2.putText(display_frame_left, f"  -> Move: rails={dx/PIXELS_PER_CM * STEPS_PER_CM * scale_move * RAILS_CALIBRATION:.0f}st, main={dy/PIXELS_PER_CM * STEPS_PER_CM * scale_move * MAIN_CALIBRATION:.0f}st", (10, 80),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        # Line 3: Arm tip offset
+                        cv2.putText(display_frame_left, f"ARM OFFSET: dx={OFFSET_X_CM:+.2f}cm ({-130}px), dy={OFFSET_Y_CM:+.2f}cm ({+150}px)", (10, 110),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 0, 200), 2)
+                        # Line 4: Combined movement to position arm tip on flower
+                        cv2.putText(display_frame_left, f"  -> Move: rails={rails_steps_log}st, main={main_steps_log}st", (10, 140),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 200), 2)
+                        # Line 5: Final combined cm values
+                        cv2.putText(display_frame_left, f"FINAL: dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm", (10, 170),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                        cv2.putText(display_frame_left, "[PAUSED] Press 'q' to continue...", (10, 200),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        
+                        # Apply rotation if configured
+                        display_frame_left = rotate_frame(display_frame_left, ROTATE_LEFT)
+                        display_frame_right = rotate_frame(display_frame_right, ROTATE_RIGHT)
+                        
+                        h_display = DISPLAY_HEIGHT // 2
+                        w_display = DISPLAY_WIDTH // 2
+                        display_frame_left = cv2.resize(display_frame_left, (w_display, h_display))
+                        display_frame_right = cv2.resize(display_frame_right, (w_display, h_display))
+                        
+                        display_combined = np.hstack([display_frame_right, display_frame_left])
+                        cv2.imshow("DEMO MODE - Automatic Flower Tracking", display_combined)
+                    
+                    # Print debug info
                     pos = get_current_position()
                     print(f"\n[DEMO] FLOWER DETECTED - DEBUG MODE")
                     print(f"[DEMO] Frame {frame_count}: Confidence={target_det['confidence']:.2f}, Depth={depth_m:.3f}m")
                     print(f"[DEMO] Current Position: X={pos['x']:.2f}cm, Y={pos['y']:.2f}cm, Z={pos['z']:.2f}cm")
-                    print(f"[DEMO] Flower Offset from Center: dx={dx:.0f}px, dy={dy:.0f}px")
-                    print(f"[DEMO] Movement Needed: dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
-                    print(f"[DEMO] Motor Steps: rails={rails_steps_log}, main={main_steps_log}")
-                    print(f"[DEMO] *** STOPPED FOR DEBUGGING - Press 'q' to exit ***\n")
-                    time.sleep(0.05)
+                    print(f"\n[DEMO] FLOWER (camera center to flower):")
+                    print(f"[DEMO]   Pixels: dx={dx:.0f}px, dy={dy:.0f}px")
+                    print(f"[DEMO]   CM: dx={dx/PIXELS_PER_CM:.2f}cm, dy={dy/PIXELS_PER_CM:.2f}cm")
+                    flower_rails_steps = dx/PIXELS_PER_CM * STEPS_PER_CM * scale_move * RAILS_CALIBRATION
+                    flower_main_steps = dy/PIXELS_PER_CM * STEPS_PER_CM * scale_move * MAIN_CALIBRATION
+                    print(f"[DEMO]   Steps: rails={flower_rails_steps:.0f}, main={flower_main_steps:.0f}")
+                    print(f"\n[DEMO] ARM TIP OFFSET (arm tip is -130px left, +150px down from camera):")
+                    print(f"[DEMO]   Offset: dx={OFFSET_X_CM:+.2f}cm, dy={OFFSET_Y_CM:+.2f}cm")
+                    print(f"\n[DEMO] FINAL (camera center + offset to position arm tip on flower):")
+                    print(f"[DEMO]   CM: dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
+                    print(f"[DEMO]   Steps: rails={rails_steps_log}, main={main_steps_log}")
+                    print(f"[DEMO] *** PAUSED - Press 'q' in display window to continue ***\n")
+                    
+                    # Wait for 'q' key press while displaying
+                    while True:
+                        key = cv2.waitKey(100) & 0xFF
+                        if key == ord('q') or key == 27:
+                            DEBUG_MOVEMENT = False
+                            print(f"[DEMO] Resuming from debug pause...\n")
+                            break
                     continue
                 else:
                     # Normal mode: approach flower
@@ -891,6 +1016,9 @@ def demo_mode_worker():
                     
                     # Pollinate the flower
                     pollinate(client_socket, vibrate_duration_ms=500, van_de_graaf_duration_ms=500, repeat=1)
+                    
+                    # Mark flower as visited at its world coordinates
+                    mark_flower_as_visited(flower_world_x, flower_world_y)
                     
                     # Move arm back up 32cm
                     arm_up_steps = int(32 * STEPS_PER_CM_ARM)  # Move up 32cm
