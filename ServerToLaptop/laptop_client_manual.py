@@ -68,7 +68,7 @@ scale_move = 1.0  # Changed from 0.1 - was causing 0-step commands
 RAILS_CALIBRATION = 0.67  # Rails was at 45cm when tracking showed 30cm (30/45 = 0.67)
 MAIN_CALIBRATION = 1.0    # Main was accurate
 
-PIXELS_PER_CM = 10.0
+PIXELS_PER_CM = 25.84
 MAX_CM_PER_CYCLE = 10.0
 MAX_STEPS_PER_CYCLE = int(MAX_CM_PER_CYCLE * STEPS_PER_CM)
 
@@ -96,7 +96,7 @@ direction_dict = {
 
 # Debug mode
 DEBUG_MOVEMENT = False  # Set to True to stop at flower and display movement calculations
-DEBUG_SKIP_DEPTH = True  # Set to True to skip depth estimation and detection
+DEBUG_SKIP_DEPTH = False  # Set to True to skip depth estimation and detection
 
 # =============================
 # Load Models and Calibration
@@ -149,6 +149,8 @@ LIMIT_Y_MIN = 0.0       # Rearmost position
 LIMIT_Y_MAX = 18.0      # Frontmost position (main: 18 cm)
 LIMIT_Z_MIN = 0.0       # Bottom/released position
 LIMIT_Z_MAX = 20.0      # Highest position (arm: 20 cm)
+OFFSET_X_CM = 0       # Offset for x (if any)
+OFFSET_Y_CM = 0       # Offset for y (if any)
 
 # =============================
 # Display Thread
@@ -682,7 +684,7 @@ def frame_reception_thread():
 # =============================
 def demo_mode_worker():
     """Automatic flower detection and tracking demo."""
-    global demo_stop_flag, current_frame_left, current_frame_right, demo_mode
+    global demo_stop_flag, current_frame_left, current_frame_right, demo_mode, OFFSET_X_CM, OFFSET_Y_CM
     
     # Reset position to origin at demo start
     reset_position()
@@ -718,7 +720,6 @@ def demo_mode_worker():
     
     try:
         while not demo_stop_flag and demo_mode:
-            print_position()
             with frame_lock:
                 if current_frame_left is None or current_frame_right is None:
                     time.sleep(0.05)
@@ -831,8 +832,8 @@ def demo_mode_worker():
                 depth_m = target_depth['median']
                 
                 # Calculate movement needed
-                dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
-                dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
+                dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_X_CM
+                dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_Y_CM
                 dx_cm_allowed, dy_cm_allowed, _ = clamp_movement_to_limits(dx_cm_raw, dy_cm_raw, 0.0)
                 move_plan_preview = {}
                 if abs(dx_cm_allowed) >= 0.1:
@@ -881,7 +882,7 @@ def demo_mode_worker():
                         print(f"[DEMO] Already centered on flower, proceeding with arm down")
                     
                     # Always move arm down 30cm when flower detected
-                    arm_steps = int(-30 * STEPS_PER_CM_ARM)  # Move down 30cm
+                    arm_steps = int(-32 * STEPS_PER_CM_ARM)  # Move down 32cm
                     arm_command = {'arm': arm_steps, '_hold_motors': ['arm']}  # Keep arm powered to hold position
                     print(f"[DEMO] Frame {frame_count}: ARM DOWN - Sending motor_command={arm_command}")
                     
@@ -891,12 +892,12 @@ def demo_mode_worker():
                     # Pollinate the flower
                     pollinate(client_socket, vibrate_duration_ms=500, van_de_graaf_duration_ms=500, repeat=1)
                     
-                    # Move arm back up 30cm
-                    arm_up_steps = int(30 * STEPS_PER_CM_ARM)  # Move up 30cm
+                    # Move arm back up 32cm
+                    arm_up_steps = int(32 * STEPS_PER_CM_ARM)  # Move up 32cm
                     arm_command_up = {'arm': arm_up_steps, '_hold_motors': ['arm']}  # Keep arm held after retract
                     print(f"[DEMO] Frame {frame_count}: ARM UP - Sending motor_command={arm_command_up}")
                     send_motor_command(client_socket, arm_command_up)
-                    print(f"[DEMO] Arm retracted: {arm_up_steps} steps (moving up 30cm)")
+                    print(f"[DEMO] Arm retracted: {arm_up_steps} steps (moving up 32cm)")
                     time.sleep(7)  # Wait for arm to retract
                     
                     # Move back to saved position
@@ -914,9 +915,8 @@ def demo_mode_worker():
                     
                     # Don't send empty command at the end of frame when flower detected
                     time.sleep(0.05)
-                    continue
             
-            # Display
+            # Display (runs every frame, not skipped by continue)
             if SHOW_DEBUG:
                 display_frame_left = frame_left.copy()
                 display_frame_right = frame_right.copy()
