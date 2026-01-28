@@ -19,6 +19,10 @@ from gpiozero import OutputDevice
 # Network configuration
 PORT = 8000
 
+# Message type identifiers for framed protocol
+MSG_TYPE_FRAME = 1      # Stereo frame data
+MSG_TYPE_COMMAND = 2    # Motor command
+
 # Camera indices (adjust based on your setup)
 CAM_LEFT = 0
 CAM_RIGHT = 2
@@ -239,7 +243,7 @@ def execute_motor_command(command_dict):
 # Network Communication
 # =============================
 def send_stereo_frames(conn, frame_left, frame_right):
-    """Send stereo frame pair to laptop."""
+    """Send stereo frame pair to laptop with typed framing protocol."""
     # Compress both frames to JPEG
     _, buffer_left = cv2.imencode('.jpg', frame_left, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
     _, buffer_right = cv2.imencode('.jpg', frame_right, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
@@ -251,28 +255,54 @@ def send_stereo_frames(conn, frame_left, frame_right):
         'timestamp': time.time()
     })
     
-    # Send with size header
-    message = struct.pack("Q", len(data)) + data
+    # Send with typed frame: 8 bytes (size) + 1 byte (type) + payload
+    message = struct.pack("QB", len(data), MSG_TYPE_FRAME) + data
     conn.sendall(message)
 
+def recv_exact(conn, size):
+    """Receive exact number of bytes from socket."""
+    buf = b''
+    while len(buf) < size:
+        chunk = conn.recv(size - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
 def receive_motor_command(conn):
-    """Receive motor command from laptop."""
+    """Receive motor command from laptop with typed framing protocol."""
     try:
         conn.setblocking(False)  # Non-blocking mode
         try:
-            data = conn.recv(4096)
+            # Try to read header: 8 bytes (size) + 1 byte (type)
+            header = conn.recv(9)
+            if not header or len(header) < 9:
+                return None
         except BlockingIOError:
             # No data available
             return None
         finally:
-            conn.setblocking(True)  # Back to blocking
+            conn.setblocking(True)  # Back to blocking for payload
         
-        if not data:
+        # Parse header
+        msg_len, msg_type = struct.unpack("QB", header)
+        
+        # Verify this is a command message
+        if msg_type != MSG_TYPE_COMMAND:
+            print(f"[Pi] WARNING: Expected command (type {MSG_TYPE_COMMAND}), got type {msg_type}")
+            # Skip this message
+            _ = recv_exact(conn, msg_len)
             return None
         
-        command_dict = pickle.loads(data)
-        print(f"[Pi] RECEIVED MOTOR COMMAND: {command_dict}")
+        # Read exact payload
+        payload = recv_exact(conn, msg_len)
+        if not payload:
+            return None
+        
+        command_dict = pickle.loads(payload)
+        print(f"[Pi] RECEIVED MOTOR COMMAND: {command_dict} (type={msg_type})")
         return command_dict
+    
     except Exception as e:
         print(f"[Pi] Error receiving command: {e}")
         return None

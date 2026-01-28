@@ -28,6 +28,10 @@ from datetime import datetime
 PI_IP = "100.98.87.47"  # Replace with your Pi's IP
 PORT = 8000
 
+# Message type identifiers for framed protocol
+MSG_TYPE_FRAME = 1      # Stereo frame data
+MSG_TYPE_COMMAND = 2    # Motor command
+
 # =============================
 # Vision Configuration
 # =============================
@@ -84,6 +88,11 @@ direction_dict = {
     "up": [("arm", 1)],
     "down": [("arm", -1)],
 }
+
+
+# Debug mode
+DEBUG_MOVEMENT = False  # Set to True to stop at flower and display movement calculations
+DEBUG_SKIP_DEPTH = True  # Set to True to skip depth estimation and detection
 
 # =============================
 # Load Models and Calibration
@@ -530,15 +539,30 @@ def convert_depth_to_arm_steps(depth_m, target_depth_m=0.40):
 # =============================
 def receive_stereo_frames(client_socket, data, payload_size):
     """Receive stereo frame pair from Pi."""
-    while len(data) < payload_size:
+    # Read header: 8 bytes (size) + 1 byte (type)
+    header_size = payload_size + 1
+    while len(data) < header_size:
         packet = client_socket.recv(4096)
         if not packet:
             return None, None, data
         data += packet
     
     packed_msg_size = data[:payload_size]
-    data = data[payload_size:]
+    msg_type = data[payload_size]
+    data = data[header_size:]
     msg_size = struct.unpack("Q", packed_msg_size)[0]
+    
+    # Verify this is a frame message
+    if msg_type != MSG_TYPE_FRAME:
+        print(f"[Laptop] WARNING: Expected frame (type {MSG_TYPE_FRAME}), got type {msg_type}")
+        # Skip this message
+        while len(data) < msg_size:
+            packet = client_socket.recv(4096)
+            if not packet:
+                return None, None, data
+            data += packet
+        data = data[msg_size:]
+        return None, None, data
     
     while len(data) < msg_size:
         packet = client_socket.recv(4096)
@@ -557,11 +581,13 @@ def receive_stereo_frames(client_socket, data, payload_size):
     return frame_left, frame_right, data
 
 def send_motor_command(client_socket, command_dict):
-    """Send motor command to Pi."""
+    """Send motor command to Pi with typed framing protocol."""
     try:
         data = pickle.dumps(command_dict)
-        print(f"[Laptop] SENDING MOTOR COMMAND: {command_dict} ({len(data)} bytes)")
-        client_socket.send(data)
+        # Pack: 8 bytes (size) + 1 byte (type) + payload
+        message = struct.pack("QB", len(data), MSG_TYPE_COMMAND) + data
+        print(f"[Laptop] SENDING MOTOR COMMAND: {command_dict} ({len(data)} bytes, type={MSG_TYPE_COMMAND})")
+        client_socket.sendall(message)
         print(f"[Laptop] Motor command sent successfully")
     except Exception as e:
         print(f"[Laptop] Error sending command: {e}")
@@ -720,8 +746,11 @@ def demo_mode_worker():
             
             depth_stats_list = []
             for det in detections:
-                scaled_box = tuple(int(coord * SCALE_FOR_MATCHING) for coord in det['box'])
-                depth_stats = estimate_roi_depth(depth_map, scaled_box)
+                if DEBUG_SKIP_DEPTH:
+                    depth_stats = None  # Skip depth estimation
+                else:
+                    scaled_box = tuple(int(coord * SCALE_FOR_MATCHING) for coord in det['box'])
+                    depth_stats = estimate_roi_depth(depth_map, scaled_box)
                 depth_stats_list.append(depth_stats)
             
             target_det, target_depth = select_target_flower(detections, depth_stats_list, w, h)
@@ -781,11 +810,6 @@ def demo_mode_worker():
                 consecutive_no_detect = 0  # Reset counter when we detect
                 flower_found = True
                 
-                # Save current position before moving toward flower
-                if saved_position is None:
-                    saved_position = get_current_position().copy()
-                    print(f"[DEMO] Position saved: ({saved_position['y']:.2f}, {saved_position['x']:.2f})")
-                
                 x1, y1, x2, y2 = target_det['box']
                 flower_center_x = (x1 + x2) / 2
                 flower_center_y = (y1 + y2) / 2
@@ -794,70 +818,89 @@ def demo_mode_worker():
                 dy = flower_center_y - (h / 2)
                 depth_m = target_depth['median']
                 
-                print(f"[DEMO] Frame {frame_count}: Flower found! dx={dx:.0f}px, dy={dy:.0f}px, depth={depth_m:.3f}m (conf={target_det['confidence']:.2f})")
-                
-                # Preview how much we'd need to move to center the flower (log only, no movement)
+                # Calculate movement needed
                 dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
                 dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE)
                 dx_cm_allowed, dy_cm_allowed, _ = clamp_movement_to_limits(dx_cm_raw, dy_cm_raw, 0.0)
                 move_plan_preview = {}
-                if abs(dx_cm_allowed) >= 0.5:
+                if abs(dx_cm_allowed) >= 0.1:
                     entries = direction_dict["left"] if dx_cm_allowed > 0 else direction_dict["right"]
                     steps_for_cm = abs(dx_cm_allowed) * STEPS_PER_CM * scale_move
                     for motor_name, multiplier in entries:
                         move_plan_preview[motor_name] = move_plan_preview.get(motor_name, 0) + int(multiplier * steps_for_cm)
-                if abs(dy_cm_allowed) >= 0.5:
+                if abs(dy_cm_allowed) >= 0.1:
                     entries = direction_dict["rear"] if dy_cm_allowed > 0 else direction_dict["front"]
                     steps_for_cm = abs(dy_cm_allowed) * STEPS_PER_CM * scale_move
                     for motor_name, multiplier in entries:
                         move_plan_preview[motor_name] = move_plan_preview.get(motor_name, 0) + int(multiplier * steps_for_cm)
                 rails_steps_log = move_plan_preview.get("rails", 0)
                 main_steps_log = move_plan_preview.get("main", 0)
-                print(f"[DEMO] Move preview (not executed): dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm | rails={rails_steps_log} steps, main={main_steps_log} steps")
-
-                # Execute a small movement toward the flower center
-                move_plan = convert_offsets_to_motor_steps(dx, dy)
-                if move_plan:
-                    print(f"[DEMO] Executing move toward flower: {move_plan}")
-                    send_motor_command(client_socket, move_plan)
-                    time.sleep(0.3)  # Short wait for movement to complete
-                else:
-                    # If no movement needed (already centered), proceed to arm down
-                    print(f"[DEMO] Already centered on flower, proceeding with arm down")
                 
-                # Always move arm down 30cm when flower detected
-                arm_steps = int(-30 * STEPS_PER_CM_ARM)  # Move down 30cm
-                arm_command = {'arm': arm_steps, '_hold_motors': ['arm']}  # Keep arm powered to hold position
-                print(f"[DEMO] Arm movement: {arm_steps} steps (moving down 30cm to probe flower)")
-                
-                send_motor_command(client_socket, arm_command)
-                time.sleep(0.5)  # Wait for arm to reach flower
-                
-                # Pollinate the flower
-                pollinate(client_socket, vibrate_duration_ms=500, van_de_graaf_duration_ms=500, repeat=1)
-                
-                # Move arm back up 30cm
-                arm_up_steps = int(30 * STEPS_PER_CM_ARM)  # Move up 30cm
-                arm_command_up = {'arm': arm_up_steps, '_hold_motors': ['arm']}  # Keep arm held after retract
-                send_motor_command(client_socket, arm_command_up)
-                print(f"[DEMO] Arm retracted: {arm_up_steps} steps (moving up 30cm)")
-                time.sleep(0.5)  # Wait for arm to retract
-                
-                # Move back to saved position
-                if saved_position:
+                if DEBUG_MOVEMENT:
+                    # Debug mode: stop and display info
                     pos = get_current_position()
-                    dx_to_saved = saved_position["x"] - pos["x"]
-                    dy_to_saved = saved_position["y"] - pos["y"]
-                    print(f"[DEMO] Moving back to saved position: ({saved_position['y']:.2f}, {saved_position['x']:.2f})")
-                    move_plan = convert_offsets_to_motor_steps(dx_to_saved * PIXELS_PER_CM, dy_to_saved * PIXELS_PER_CM)
+                    print(f"\n[DEMO] FLOWER DETECTED - DEBUG MODE")
+                    print(f"[DEMO] Frame {frame_count}: Confidence={target_det['confidence']:.2f}, Depth={depth_m:.3f}m")
+                    print(f"[DEMO] Current Position: X={pos['x']:.2f}cm, Y={pos['y']:.2f}cm, Z={pos['z']:.2f}cm")
+                    print(f"[DEMO] Flower Offset from Center: dx={dx:.0f}px, dy={dy:.0f}px")
+                    print(f"[DEMO] Movement Needed: dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
+                    print(f"[DEMO] Motor Steps: rails={rails_steps_log}, main={main_steps_log}")
+                    print(f"[DEMO] *** STOPPED FOR DEBUGGING - Press 'q' to exit ***\n")
+                    time.sleep(0.05)
+                    continue
+                else:
+                    # Normal mode: approach flower
+                    # Save current position before moving toward flower
+                    if saved_position is None:
+                        saved_position = get_current_position().copy()
+                        print(f"[DEMO] Position saved: ({saved_position['y']:.2f}, {saved_position['x']:.2f})")
+                    
+                    print(f"[DEMO] Frame {frame_count}: Flower found! dx={dx:.0f}px, dy={dy:.0f}px, depth={depth_m:.3f}m (conf={target_det['confidence']:.2f})")
+                    print(f"[DEMO] Movement: dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm | rails={rails_steps_log} steps, main={main_steps_log} steps")
+
+                    # Execute a small movement toward the flower center
+                    move_plan = convert_offsets_to_motor_steps(dx, dy)
                     if move_plan:
+                        print(f"[DEMO] Executing move toward flower: {move_plan}")
                         send_motor_command(client_socket, move_plan)
-                        time.sleep(0.5)
-                    saved_position = None  # Clear saved position for next flower
-                
-                # Don't send empty command at the end of frame when flower detected
-                time.sleep(0.05)
-                continue
+                        time.sleep(0.3)  # Short wait for movement to complete
+                    else:
+                        # If no movement needed (already centered), proceed to arm down
+                        print(f"[DEMO] Already centered on flower, proceeding with arm down")
+                    
+                    # Always move arm down 30cm when flower detected
+                    arm_steps = int(-30 * STEPS_PER_CM_ARM)  # Move down 30cm
+                    arm_command = {'arm': arm_steps, '_hold_motors': ['arm']}  # Keep arm powered to hold position
+                    print(f"[DEMO] Arm movement: {arm_steps} steps (moving down 30cm to probe flower)")
+                    
+                    send_motor_command(client_socket, arm_command)
+                    time.sleep(0.5)  # Wait for arm to reach flower
+                    
+                    # Pollinate the flower
+                    pollinate(client_socket, vibrate_duration_ms=500, van_de_graaf_duration_ms=500, repeat=1)
+                    
+                    # Move arm back up 30cm
+                    arm_up_steps = int(30 * STEPS_PER_CM_ARM)  # Move up 30cm
+                    arm_command_up = {'arm': arm_up_steps, '_hold_motors': ['arm']}  # Keep arm held after retract
+                    send_motor_command(client_socket, arm_command_up)
+                    print(f"[DEMO] Arm retracted: {arm_up_steps} steps (moving up 30cm)")
+                    time.sleep(0.5)  # Wait for arm to retract
+                    
+                    # Move back to saved position
+                    if saved_position:
+                        pos = get_current_position()
+                        dx_to_saved = saved_position["x"] - pos["x"]
+                        dy_to_saved = saved_position["y"] - pos["y"]
+                        print(f"[DEMO] Moving back to saved position: ({saved_position['y']:.2f}, {saved_position['x']:.2f})")
+                        move_plan = convert_offsets_to_motor_steps(dx_to_saved * PIXELS_PER_CM, dy_to_saved * PIXELS_PER_CM)
+                        if move_plan:
+                            send_motor_command(client_socket, move_plan)
+                            time.sleep(0.5)
+                        saved_position = None  # Clear saved position for next flower
+                    
+                    # Don't send empty command at the end of frame when flower detected
+                    time.sleep(0.05)
+                    continue
             
             # Display
             if SHOW_DEBUG:
