@@ -1,6 +1,6 @@
 import gpiozero as GPIO                                
 from adafruit_motorkit import MotorKit
-from gpiozero import Motor
+from gpiozero import OutputDevice
 import busio
 import board
 from adafruit_motorkit import MotorKit
@@ -14,7 +14,7 @@ kit1 = MotorKit(i2c=i2c, address=0x60)
 
 # kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
-motor = Motor(forward=17, backward=27)
+motor = OutputDevice(17, active_high=False, initial_value=False)
 
 
 
@@ -22,7 +22,47 @@ motor = Motor(forward=17, backward=27)
 # motor.forward()  # stops motor weirdly enoug
 
 while True:
-    motor.stop()      # stops motor
+    motor.on()      # stops motor
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     
 

@@ -14,7 +14,6 @@ kit1 = MotorKit(i2c=i2c, address=0x60)
 
 # kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
-motor = Motor(forward=17, backward=27)
 
 def shake(timimg):
     """
