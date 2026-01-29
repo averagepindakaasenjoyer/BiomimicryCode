@@ -121,7 +121,7 @@ direction_dict = {
 
 
 # Debug mode
-DEBUG_MOVEMENT = True  # Set to True to stop at flower and display movement calculations
+DEBUG_MOVEMENT = False  # Set to True to stop at flower and display movement calculations
 DEBUG_SKIP_DEPTH = False  # Set to True to skip depth estimation and detection
 
 # Advanced flower estimation
@@ -187,7 +187,7 @@ LIMIT_Z_MIN = 0.0       # Bottom/released position
 LIMIT_Z_MAX = 20.0      # Highest position (arm: 20 cm)
 # Arm tip offset from camera center (measured in pixels, converted to cm)
 # Arm tip is at -130px left, +150px down from camera center
-OFFSET_X_CM = 3.03      # Compensate for arm tip being left of center (move right)
+OFFSET_X_CM = 5.03      # Compensate for arm tip being left of center (move right)
 OFFSET_Y_CM = 5.21      # Compensate for arm tip being below center (move forward)
 
 # =============================
@@ -748,7 +748,7 @@ def demo_mode_worker():
                     )
                     if move_plan:
                         send_motor_command(client_socket, move_plan)
-                    time.sleep(2.0)
+                    time.sleep(4.0)
                     
                     # Transition to refined approach
                     approach_state = "refined_approach"
@@ -866,7 +866,7 @@ def demo_mode_worker():
                             )
                             if move_plan:
                                 send_motor_command(client_socket, move_plan)
-                            time.sleep(2.0)
+                            time.sleep(4.0)
                             
                             # Final check before pollination - verify we're not too close to a pollinated flower
                             pos = get_current_position(position_lock, current_position)
@@ -893,16 +893,16 @@ def demo_mode_worker():
             
             elif approach_state == "pollinating":
                 # Step 3: Pollinate sequence
-                print(f"[DEMO] Frame {frame_count}: ARM DOWN 35cm")
-                arm_down_steps = int(-35 * STEPS_PER_CM_ARM)
+                print(f"[DEMO] Frame {frame_count}: ARM DOWN 36cm")
+                arm_down_steps = int(-36 * STEPS_PER_CM_ARM)
                 send_motor_command(client_socket, {'arm': arm_down_steps, '_hold_motors': ['arm']})
                 
-                print(f"[DEMO] Running VDG for 2 seconds")
+                print(f"[DEMO] Running VDG for 10 seconds")
                 van_de_graaf_motor(client_socket, 10000)
                 time.sleep(7.5)
                 
-                print(f"[DEMO] ARM UP 35cm")
-                arm_up_steps = int(35 * STEPS_PER_CM_ARM)
+                print(f"[DEMO] ARM UP 36cm")
+                arm_up_steps = int(36 * STEPS_PER_CM_ARM)
                 send_motor_command(client_socket, {'arm': arm_up_steps, '_hold_motors': ['arm']})
                 time.sleep(5.0)
                 
