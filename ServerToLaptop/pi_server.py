@@ -233,11 +233,9 @@ def execute_motor_command(command_dict):
             else:
                 print(f"[Pi] Warning: Unknown motor '{motor_name}'")
     
-    # Wait for all motors to complete
-    for t in threads:
-        t.join()
-    
-    print("[Pi] Motor command complete")
+    # Motors run in background threads - don't wait for completion
+    # This allows multiple commands to execute in parallel
+    print(f"[Pi] Started {len(threads)} motor thread(s) (non-blocking)")
 
 # =============================
 # Network Communication

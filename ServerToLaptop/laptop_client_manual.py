@@ -182,7 +182,7 @@ LIMIT_Z_MAX = 20.0      # Highest position (arm: 20 cm)
 # Arm tip offset from camera center (measured in pixels, converted to cm)
 # Arm tip is at -130px left, +150px down from camera center
 OFFSET_X_CM = 5.03      # Compensate for arm tip being left of center (move right)
-OFFSET_Y_CM = 5.81     # Compensate for arm tip being below center (move backward)
+OFFSET_Y_CM = -5.81     # Compensate for arm tip being below center (move backward)
 
 # =============================
 # Display Thread
@@ -378,6 +378,126 @@ def frame_reception_thread():
         frame_thread_failed = True
 
 # =============================
+# Debug Visualization Helper
+# =============================
+def show_flower_debug_visualization(frame_left, frame_right, detections, depth_stats_list, target_det, 
+                                     dx, dy, dx_cm_allowed, dy_cm_allowed, rails_steps_log, main_steps_log, 
+                                     w, h, frame_count, stage_name="DETECTION"):
+    """Display debug visualization for flower detection and movement calculations.
+    
+    Args:
+        frame_left: Left camera frame
+        frame_right: Right camera frame
+        detections: List of flower detections
+        depth_stats_list: List of depth statistics for each detection
+        target_det: Selected target detection
+        dx: Pixel offset X from center
+        dy: Pixel offset Y from center
+        dx_cm_allowed: Allowed movement X in cm (after boundary check)
+        dy_cm_allowed: Allowed movement Y in cm (after boundary check)
+        rails_steps_log: Motor steps for rails
+        main_steps_log: Motor steps for main
+        w: Frame width
+        h: Frame height
+        frame_count: Current frame number
+        stage_name: Stage name for display ("INITIAL" or "REFINED")
+    """
+    if not SHOW_DEBUG:
+        return
+    
+    display_frame_left = frame_left.copy()
+    display_frame_right = frame_right.copy()
+    
+    # Draw detections
+    for det, depth_stats in zip(detections, depth_stats_list):
+        x1, y1, x2, y2 = det['box']
+        is_target = (det == target_det)
+        color = (0, 255, 0) if is_target else (128, 128, 128)
+        thickness = 3 if is_target else 1
+        
+        cv2.rectangle(display_frame_left, (x1, y1), (x2, y2), color, thickness)
+        
+        if depth_stats:
+            label = f"{det['confidence']:.2f} | {depth_stats['median']:.2f}m"
+            cv2.putText(display_frame_left, label, (x1, y1 - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    
+    # Draw center crosshair
+    cv2.line(display_frame_left, (w//2 - 20, h//2), (w//2 + 20, h//2), (255, 0, 0), 2)
+    cv2.line(display_frame_left, (w//2, h//2 - 20), (w//2, h//2 + 20), (255, 0, 0), 2)
+    
+    # Draw flower center and line from center to flower
+    if target_det:
+        x1, y1, x2, y2 = target_det['box']
+        target_x = int((x1 + x2) / 2)
+        target_y = int((y1 + y2) / 2)
+        cv2.line(display_frame_left, (w//2, h//2), (target_x, target_y), (0, 255, 255), 2)
+        cv2.circle(display_frame_left, (target_x, target_y), 10, (0, 255, 0), -1)
+    
+    # Draw arm tip position marker (-130px left, +150px down from center)
+    arm_tip_x = int(w//2 - 130)
+    arm_tip_y = int(h//2 + 150)
+    if 0 <= arm_tip_x < w and 0 <= arm_tip_y < h:
+        cv2.circle(display_frame_left, (arm_tip_x, arm_tip_y), 8, (200, 0, 200), 2)
+        cv2.putText(display_frame_left, "ARM", (arm_tip_x-15, arm_tip_y-15),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 0, 200), 2)
+        if target_det:
+            cv2.line(display_frame_left, (arm_tip_x, arm_tip_y), (target_x, target_y), (100, 200, 255), 2)
+    
+    # Add debug info to display
+    pos = get_current_position(position_lock, current_position)
+    cv2.putText(display_frame_left, f"[{stage_name}] FLOWER ESTIMATION - Frame {frame_count}", (10, 30),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    cv2.putText(display_frame_left, f"FLOWER: dx={dx:.0f}px, dy={dy:.0f}px", (10, 60),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    cv2.putText(display_frame_left, f"  -> Move: rails={dx/PIXELS_PER_CM * STEPS_PER_CM * scale_move * RAILS_CALIBRATION:.0f}st, main={dy/PIXELS_PER_CM * STEPS_PER_CM * scale_move * MAIN_CALIBRATION:.0f}st", (10, 90),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.putText(display_frame_left, f"ARM OFFSET: dx={OFFSET_X_CM:+.2f}cm, dy={OFFSET_Y_CM:+.2f}cm", (10, 120),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 0, 200), 2)
+    cv2.putText(display_frame_left, f"  -> Move: rails={rails_steps_log}st, main={main_steps_log}st", (10, 150),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 200), 2)
+    cv2.putText(display_frame_left, f"FINAL: dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm", (10, 180),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    cv2.putText(display_frame_left, "[PAUSED] Press 'q' to continue...", (10, 210),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+    
+    # Apply rotation if configured
+    display_frame_left = rotate_frame(display_frame_left, ROTATE_LEFT)
+    display_frame_right = rotate_frame(display_frame_right, ROTATE_RIGHT)
+    
+    h_display = DISPLAY_HEIGHT // 2
+    w_display = DISPLAY_WIDTH // 2
+    display_frame_left = cv2.resize(display_frame_left, (w_display, h_display))
+    display_frame_right = cv2.resize(display_frame_right, (w_display, h_display))
+    
+    display_combined = np.hstack([display_frame_right, display_frame_left])
+    cv2.imshow("DEMO MODE - Automatic Flower Tracking", display_combined)
+    
+    # Print debug info to console
+    print(f"\n[DEMO] {stage_name} ESTIMATION - DEBUG MODE")
+    print(f"[DEMO] Frame {frame_count}: Confidence={target_det['confidence']:.2f}")
+    print(f"[DEMO] Current Position: X={pos['x']:.2f}cm, Y={pos['y']:.2f}cm, Z={pos['z']:.2f}cm")
+    print(f"\n[DEMO] FLOWER (camera center to flower):")
+    print(f"[DEMO]   Pixels: dx={dx:.0f}px, dy={dy:.0f}px")
+    print(f"[DEMO]   CM: dx={dx/PIXELS_PER_CM:.2f}cm, dy={dy/PIXELS_PER_CM:.2f}cm")
+    flower_rails_steps = dx/PIXELS_PER_CM * STEPS_PER_CM * scale_move * RAILS_CALIBRATION
+    flower_main_steps = dy/PIXELS_PER_CM * STEPS_PER_CM * scale_move * MAIN_CALIBRATION
+    print(f"[DEMO]   Steps: rails={flower_rails_steps:.0f}, main={flower_main_steps:.0f}")
+    print(f"\n[DEMO] ARM TIP OFFSET (arm tip is -130px left, +150px down from camera):")
+    print(f"[DEMO]   Offset: dx={OFFSET_X_CM:+.2f}cm, dy={OFFSET_Y_CM:+.2f}cm")
+    print(f"\n[DEMO] FINAL (camera center + offset to position arm tip on flower):")
+    print(f"[DEMO]   CM: dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
+    print(f"[DEMO]   Steps: rails={rails_steps_log}, main={main_steps_log}")
+    print(f"[DEMO] *** PAUSED - Press 'q' in display window to continue ***\n")
+    
+    # Wait for 'q' key press while displaying
+    while True:
+        key = cv2.waitKey(100) & 0xFF
+        if key == ord('q') or key == 27:
+            print(f"[DEMO] Resuming from {stage_name} debug pause...\n")
+            break
+
+# =============================
 # Demo Mode
 # =============================
 def demo_mode_worker():
@@ -396,11 +516,8 @@ def demo_mode_worker():
     time.sleep(10.0)  # Wait for arm to reach position
     
     frame_count = 0
-    flower_found = False  # Track if we've located a flower
-    consecutive_no_detect = 0  # Track consecutive frames without detection
     
     # Square search pattern waypoints: (Y, X) in cm
-    # Start (0,0) → (15,45) → (0,45) → (15,0) → back to (0,0)
     search_waypoints = [
         (15, 45),   # Front-left corner
         (0, 45),    # Front-right corner
@@ -410,7 +527,13 @@ def demo_mode_worker():
     current_waypoint_idx = 0
     target_waypoint = search_waypoints[current_waypoint_idx]
     
-    saved_position = None  # Position before moving toward flower
+    # Flower approach state machine
+    approach_state = "searching"  # States: searching, initial_approach, refined_approach, pollinating
+    target_det_initial = None  # Initial detection before first move
+    target_det_refined = None  # Refined detection after vision tightening
+    target_depth = None
+    saved_search_position = None
+    consecutive_no_detect = 0
     
     print("\n[DEMO] Starting automatic flower tracking demo...")
     print("[DEMO] Square search pattern: (0,0) → (15,45) → (0,45) → (15,0) → (0,0)")
@@ -440,39 +563,24 @@ def demo_mode_worker():
             
             if disparity is None:
                 print(f"[DEMO] Frame {frame_count}: Disparity failed, skipping")
-                send_motor_command(client_socket, {})
                 time.sleep(0.05)
+                frame_count += 1
                 continue
             
             depth_map = compute_depth_map(disparity, Q)
             
+            # Detect flowers
             detections = detect_flowers(frame_left, model, device, YOLO_CONF, CONFIDENCE_THRESHOLD)
             
-            depth_stats_list = []
-            for det in detections:
-                if DEBUG_SKIP_DEPTH:
-                    depth_stats = None  # Skip depth estimation
-                else:
-                    scaled_box = tuple(int(coord * SCALE_FOR_MATCHING) for coord in det['box'])
-                    depth_stats = estimate_roi_depth(depth_map, scaled_box)
-                depth_stats_list.append(depth_stats)
-            
-            target_det, target_depth = select_target_flower(detections, depth_stats_list, w, h)
-            
-            motor_command = {}
-            
-            if target_det is None:
-                consecutive_no_detect += 1
-                # If no detection for 5 frames, reset flower_found to search mode
-                if consecutive_no_detect > 5:
-                    flower_found = False
-                
-                if not flower_found:
+            if approach_state == "searching":
+                # Search mode: walk around looking for flowers
+                if not detections:
+                    consecutive_no_detect += 1
+                    
                     # Execute waypoint-based square search pattern
                     pos = get_current_position(position_lock, current_position)
                     target_y, target_x = target_waypoint
                     
-                    # Move toward current waypoint
                     dx_to_waypoint = target_x - pos["x"]
                     dy_to_waypoint = target_y - pos["y"]
                     
@@ -485,292 +593,214 @@ def demo_mode_worker():
                         dy_to_waypoint = target_y - pos["y"]
                         print(f"[DEMO] Frame {frame_count}: Reached waypoint, moving to next ({target_y:.1f}, {target_x:.1f})")
                     
-                    # Move toward waypoint (small steps each frame)
+                    # Move toward waypoint
                     move_step_cm = 1.0
                     if abs(dx_to_waypoint) > move_step_cm or abs(dy_to_waypoint) > move_step_cm:
-                        # Normalize direction
                         dist = np.sqrt(dx_to_waypoint**2 + dy_to_waypoint**2)
                         dx_norm = (dx_to_waypoint / dist) * move_step_cm
                         dy_norm = (dy_to_waypoint / dist) * move_step_cm
                         
                         move_plan = convert_offsets_to_motor_steps(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx_norm * PIXELS_PER_CM, dy_norm * PIXELS_PER_CM, PIXELS_PER_CM, MAX_CM_PER_CYCLE, MAX_STEPS_PER_CYCLE, STEPS_PER_CM, scale_move, RAILS_CALIBRATION, MAIN_CALIBRATION, direction_dict)
-                        motor_command = move_plan if move_plan else {}
-                        if motor_command:
-                            print(f"[DEMO] Frame {frame_count}: WAYPOINT SEARCH - Sending motor_command={motor_command}")
-                            send_motor_command(client_socket, motor_command)
-                else:
-                    print(f"[DEMO] Frame {frame_count}: Lost flower (no detect {consecutive_no_detect}/5), moving back to waypoint...")
-                    # Move back toward last saved waypoint position
-                    pos = get_current_position(position_lock, current_position)
-                    if saved_position:
-                        dx_to_saved = saved_position["x"] - pos["x"]
-                        dy_to_saved = saved_position["y"] - pos["y"]
-                        move_plan = convert_offsets_to_motor_steps(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx_to_saved * PIXELS_PER_CM, dy_to_saved * PIXELS_PER_CM, PIXELS_PER_CM, MAX_CM_PER_CYCLE, MAX_STEPS_PER_CYCLE, STEPS_PER_CM, scale_move, RAILS_CALIBRATION, MAIN_CALIBRATION, direction_dict)
-                        motor_command = move_plan if move_plan else {}
-                        if motor_command:
-                            print(f"[DEMO] Frame {frame_count}: RETURN TO SAVED - Sending motor_command={motor_command}")
-                            send_motor_command(client_socket, motor_command)
-                    else:
-                        motor_command = {}
-                    
-                    # Send the movement command for waypoint search
-                    if motor_command:
-                        print(f"[DEMO] Frame {frame_count}: EXECUTING RETURN COMMAND: {motor_command}")
-                        send_motor_command(client_socket, motor_command)
-            else:
-                consecutive_no_detect = 0  # Reset counter when we detect
-                flower_found = True
-                
-                x1, y1, x2, y2 = target_det['box']
-                flower_center_x = (x1 + x2) / 2
-                flower_center_y = (y1 + y2) / 2
-                
-                dx = flower_center_x - (w / 2)
-                dy = flower_center_y - (h / 2)
-                depth_m = target_depth['median']
-                
-                # Calculate movement needed
-                dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_X_CM
-                dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_Y_CM
-                dx_cm_allowed, dy_cm_allowed, _ = clamp_movement_to_limits(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx_cm_raw, dy_cm_raw, 0.0)
-                
-                # Check if this flower has already been visited
-                pos = get_current_position(position_lock, current_position)
-                flower_world_x = pos["x"] + dx_cm_allowed
-                flower_world_y = pos["y"] + dy_cm_allowed
-                
-                if is_flower_already_visited(visited_flowers, flower_world_x, flower_world_y, FLOWER_VISIT_RADIUS_CM):
-                    print(f"[DEMO] Frame {frame_count}: Flower already visited at ({flower_world_x:.2f}, {flower_world_y:.2f}) — ignoring")
-                    target_det = None
-                    target_depth = None
-                    continue
-                
-                move_plan_preview = {}
-                if abs(dx_cm_allowed) >= 0.1:
-                    entries = direction_dict["left"] if dx_cm_allowed > 0 else direction_dict["right"]
-                    steps_for_cm = abs(dx_cm_allowed) * STEPS_PER_CM * scale_move
-                    for motor_name, multiplier in entries:
-                        move_plan_preview[motor_name] = move_plan_preview.get(motor_name, 0) + int(multiplier * steps_for_cm)
-                if abs(dy_cm_allowed) >= 0.1:
-                    entries = direction_dict["rear"] if dy_cm_allowed > 0 else direction_dict["front"]
-                    steps_for_cm = abs(dy_cm_allowed) * STEPS_PER_CM * scale_move
-                    for motor_name, multiplier in entries:
-                        move_plan_preview[motor_name] = move_plan_preview.get(motor_name, 0) + int(multiplier * steps_for_cm)
-                rails_steps_log = move_plan_preview.get("rails", 0)
-                main_steps_log = move_plan_preview.get("main", 0)
-                
-                if DEBUG_MOVEMENT:
-                    # Debug mode: show visual and stop for inspection
-                    # Display debug visualization
-                    if SHOW_DEBUG:
-                        display_frame_left = frame_left.copy()
-                        display_frame_right = frame_right.copy()
-                        
-                        for det, depth_stats in zip(detections, depth_stats_list):
-                            x1, y1, x2, y2 = det['box']
-                            is_target = (det == target_det)
-                            color = (0, 255, 0) if is_target else (128, 128, 128)
-                            thickness = 3 if is_target else 1
-                            
-                            cv2.rectangle(display_frame_left, (x1, y1), (x2, y2), color, thickness)
-                            
-                            if depth_stats:
-                                label = f"{det['confidence']:.2f} | {depth_stats['median']:.2f}m"
-                                cv2.putText(display_frame_left, label, (x1, y1 - 10),
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                        
-                        cv2.line(display_frame_left, (w//2 - 20, h//2), (w//2 + 20, h//2), (255, 0, 0), 2)
-                        cv2.line(display_frame_left, (w//2, h//2 - 20), (w//2, h//2 + 20), (255, 0, 0), 2)
-                        
-                        if target_det:
-                            x1, y1, x2, y2 = target_det['box']
-                            target_x = int((x1 + x2) / 2)
-                            target_y = int((y1 + y2) / 2)
-                            cv2.line(display_frame_left, (w//2, h//2), (target_x, target_y), (0, 255, 255), 2)
-                            cv2.circle(display_frame_left, (target_x, target_y), 10, (0, 255, 0), -1)
-                        
-                        # Draw arm tip position marker (-130px left, +150px down from center)
-                        arm_tip_x = int(w//2 - 130)
-                        arm_tip_y = int(h//2 + 150)
-                        if 0 <= arm_tip_x < w and 0 <= arm_tip_y < h:
-                            cv2.circle(display_frame_left, (arm_tip_x, arm_tip_y), 8, (200, 0, 200), 2)  # Magenta circle for arm tip
-                            cv2.putText(display_frame_left, "ARM", (arm_tip_x-15, arm_tip_y-15),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 0, 200), 2)
-                            # Draw line from arm tip to flower center
-                            if target_det:
-                                cv2.line(display_frame_left, (arm_tip_x, arm_tip_y), (target_x, target_y), (100, 200, 255), 2)
-                        
-                        # Add debug info to display
-                        pos = get_current_position(position_lock, current_position)
-                        # Line 1: Flower detected at this position
-                        cv2.putText(display_frame_left, f"FLOWER: dx={dx:.0f}px, dy={dy:.0f}px", (10, 50),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                        # Line 2: Required movement without arm offset
-                        cv2.putText(display_frame_left, f"  -> Move: rails={dx/PIXELS_PER_CM * STEPS_PER_CM * scale_move * RAILS_CALIBRATION:.0f}st, main={dy/PIXELS_PER_CM * STEPS_PER_CM * scale_move * MAIN_CALIBRATION:.0f}st", (10, 80),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                        # Line 3: Arm tip offset
-                        cv2.putText(display_frame_left, f"ARM OFFSET: dx={OFFSET_X_CM:+.2f}cm ({-130}px), dy={OFFSET_Y_CM:+.2f}cm ({+150}px)", (10, 110),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 0, 200), 2)
-                        # Line 4: Combined movement to position arm tip on flower
-                        cv2.putText(display_frame_left, f"  -> Move: rails={rails_steps_log}st, main={main_steps_log}st", (10, 140),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 200), 2)
-                        # Line 5: Final combined cm values
-                        cv2.putText(display_frame_left, f"FINAL: dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm", (10, 170),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                        cv2.putText(display_frame_left, "[PAUSED] Press 'q' to continue...", (10, 200),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                        
-                        # Apply rotation if configured
-                        display_frame_left = rotate_frame(display_frame_left, ROTATE_LEFT)
-                        display_frame_right = rotate_frame(display_frame_right, ROTATE_RIGHT)
-                        
-                        h_display = DISPLAY_HEIGHT // 2
-                        w_display = DISPLAY_WIDTH // 2
-                        display_frame_left = cv2.resize(display_frame_left, (w_display, h_display))
-                        display_frame_right = cv2.resize(display_frame_right, (w_display, h_display))
-                        
-                        display_combined = np.hstack([display_frame_right, display_frame_left])
-                        cv2.imshow("DEMO MODE - Automatic Flower Tracking", display_combined)
-                    
-                    # Print debug info
-                    pos = get_current_position(position_lock, current_position)
-                    print(f"\n[DEMO] FLOWER DETECTED - DEBUG MODE")
-                    print(f"[DEMO] Frame {frame_count}: Confidence={target_det['confidence']:.2f}, Depth={depth_m:.3f}m")
-                    print(f"[DEMO] Current Position: X={pos['x']:.2f}cm, Y={pos['y']:.2f}cm, Z={pos['z']:.2f}cm")
-                    print(f"\n[DEMO] FLOWER (camera center to flower):")
-                    print(f"[DEMO]   Pixels: dx={dx:.0f}px, dy={dy:.0f}px")
-                    print(f"[DEMO]   CM: dx={dx/PIXELS_PER_CM:.2f}cm, dy={dy/PIXELS_PER_CM:.2f}cm")
-                    flower_rails_steps = dx/PIXELS_PER_CM * STEPS_PER_CM * scale_move * RAILS_CALIBRATION
-                    flower_main_steps = dy/PIXELS_PER_CM * STEPS_PER_CM * scale_move * MAIN_CALIBRATION
-                    print(f"[DEMO]   Steps: rails={flower_rails_steps:.0f}, main={flower_main_steps:.0f}")
-                    print(f"\n[DEMO] ARM TIP OFFSET (arm tip is -130px left, +150px down from camera):")
-                    print(f"[DEMO]   Offset: dx={OFFSET_X_CM:+.2f}cm, dy={OFFSET_Y_CM:+.2f}cm")
-                    print(f"\n[DEMO] FINAL (camera center + offset to position arm tip on flower):")
-                    print(f"[DEMO]   CM: dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
-                    print(f"[DEMO]   Steps: rails={rails_steps_log}, main={main_steps_log}")
-                    print(f"[DEMO] *** PAUSED - Press 'q' in display window to continue ***\n")
-                    
-                    # Wait for 'q' key press while displaying
-                    while True:
-                        key = cv2.waitKey(100) & 0xFF
-                        if key == ord('q') or key == 27:
-                            DEBUG_MOVEMENT = False
-                            print(f"[DEMO] Resuming from debug pause...\n")
-                            break
-                    continue
-                else:
-                    # Normal mode: approach flower
-                    # Save current position before moving toward flower
-                    if saved_position is None:
-                        saved_position = get_current_position(position_lock, current_position).copy()
-                        print(f"[DEMO] Position saved: ({saved_position['y']:.2f}, {saved_position['x']:.2f})")
-                    
-                    print(f"[DEMO] Frame {frame_count}: Flower found! dx={dx:.0f}px, dy={dy:.0f}px, depth={depth_m:.3f}m (conf={target_det['confidence']:.2f})")
-                    print(f"[DEMO] Movement: dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm | rails={rails_steps_log} steps, main={main_steps_log} steps")
-
-                    # Execute a small movement toward the flower center
-                    move_plan = convert_offsets_to_motor_steps(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx, dy, PIXELS_PER_CM, MAX_CM_PER_CYCLE, MAX_STEPS_PER_CYCLE, STEPS_PER_CM, scale_move, RAILS_CALIBRATION, MAIN_CALIBRATION, direction_dict)
-                    if move_plan:
-                        print(f"[DEMO] Frame {frame_count}: FLOWER APPROACH - Sending motor_command={move_plan}")
-                        send_motor_command(client_socket, move_plan)
-                        time.sleep(0.3)  # Short wait for movement to complete
-                    else:
-                        # If no movement needed (already centered), proceed to arm down
-                        print(f"[DEMO] Already centered on flower, proceeding with arm down")
-                    
-                    # Always move arm down 30cm when flower detected
-                    arm_steps = int(-32 * STEPS_PER_CM_ARM)  # Move down 32cm
-                    arm_command = {'arm': arm_steps, '_hold_motors': ['arm']}  # Keep arm powered to hold position
-                    print(f"[DEMO] Frame {frame_count}: ARM DOWN - Sending motor_command={arm_command}")
-                    
-                    send_motor_command(client_socket, arm_command)
-                    time.sleep(7)  # Wait for arm to reach flower
-                    
-                    # Pollinate the flower
-                    pollinate(client_socket, vibrate_duration_ms=500, van_de_graaf_duration_ms=500, repeat=1)
-                    
-                    # Mark flower as visited at its world coordinates
-                    mark_flower_as_visited(visited_flowers, flower_world_x, flower_world_y)
-                    
-                    # Move arm back up 32cm
-                    arm_up_steps = int(32 * STEPS_PER_CM_ARM)  # Move up 32cm
-                    arm_command_up = {'arm': arm_up_steps, '_hold_motors': ['arm']}  # Keep arm held after retract
-                    print(f"[DEMO] Frame {frame_count}: ARM UP - Sending motor_command={arm_command_up}")
-                    send_motor_command(client_socket, arm_command_up)
-                    print(f"[DEMO] Arm retracted: {arm_up_steps} steps (moving up 32cm)")
-                    time.sleep(7)  # Wait for arm to retract
-                    
-                    # Move back to saved position
-                    if saved_position:
-                        pos = get_current_position(position_lock, current_position)
-                        dx_to_saved = saved_position["x"] - pos["x"]
-                        dy_to_saved = saved_position["y"] - pos["y"]
-                        print(f"[DEMO] Moving back to saved position: ({saved_position['y']:.2f}, {saved_position['x']:.2f})")
-                        move_plan = convert_offsets_to_motor_steps(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx_to_saved * PIXELS_PER_CM, dy_to_saved * PIXELS_PER_CM, PIXELS_PER_CM, MAX_CM_PER_CYCLE, MAX_STEPS_PER_CYCLE, STEPS_PER_CM, scale_move, RAILS_CALIBRATION, MAIN_CALIBRATION, direction_dict)
                         if move_plan:
-                            print(f"[DEMO] Frame {frame_count}: RETURN TO SAVED POSITION - Sending motor_command={move_plan}")
                             send_motor_command(client_socket, move_plan)
-                            time.sleep(7)  # Wait for movement to complete
-                        saved_position = None  # Clear saved position for next flower
+                else:
+                    # Flower detected! Transition to initial approach
+                    consecutive_no_detect = 0
                     
-                    # Don't send empty command at the end of frame when flower detected
-                    time.sleep(0.05)
+                    # Get best flower (select_target_flower already scores by depth/distance)
+                    depth_stats_list = []
+                    for det in detections:
+                        if DEBUG_SKIP_DEPTH:
+                            depth_stats = None
+                        else:
+                            scaled_box = tuple(int(coord * SCALE_FOR_MATCHING) for coord in det['box'])
+                            depth_stats = estimate_roi_depth(depth_map, scaled_box)
+                        depth_stats_list.append(depth_stats)
+                    
+                    target_det_initial, target_depth = select_target_flower(detections, depth_stats_list, w, h)
+                    
+                    if target_det_initial:
+                        saved_search_position = get_current_position(position_lock, current_position).copy()
+                        print(f"[DEMO] Frame {frame_count}: FLOWER DETECTED! Starting approach sequence")
+                        approach_state = "initial_approach"
             
-            # Display (runs every frame, not skipped by continue)
-            if SHOW_DEBUG:
-                display_frame_left = frame_left.copy()
-                display_frame_right = frame_right.copy()
-                
-                for det, depth_stats in zip(detections, depth_stats_list):
-                    x1, y1, x2, y2 = det['box']
-                    is_target = (det == target_det)
-                    color = (0, 255, 0) if is_target else (128, 128, 128)
-                    thickness = 3 if is_target else 1
+            elif approach_state == "initial_approach":
+                # Step 1: Move to initial flower estimation
+                if target_det_initial:
+                    x1, y1, x2, y2 = target_det_initial['box']
+                    flower_center_x = (x1 + x2) / 2
+                    flower_center_y = (y1 + y2) / 2
                     
-                    cv2.rectangle(display_frame_left, (x1, y1), (x2, y2), color, thickness)
+                    dx = flower_center_x - (w / 2)
+                    dy = flower_center_y - (h / 2)
                     
-                    if depth_stats:
-                        label = f"{det['confidence']:.2f} | {depth_stats['median']:.2f}m"
-                        cv2.putText(display_frame_left, label, (x1, y1 - 10),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                    # Calculate movement needed
+                    dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_X_CM
+                    dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_Y_CM
+                    dx_cm_allowed, dy_cm_allowed, _ = clamp_movement_to_limits(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx_cm_raw, dy_cm_raw, 0.0)
+                    
+                    # Calculate step values for display
+                    rails_steps_log = int(dx_cm_allowed * STEPS_PER_CM * RAILS_CALIBRATION)
+                    main_steps_log = int(dy_cm_allowed * STEPS_PER_CM * MAIN_CALIBRATION)
+                    
+                    # Show debug visualization if enabled
+                    if DEBUG_MOVEMENT:
+                        depth_stats_list = []
+                        for det in detections:
+                            if DEBUG_SKIP_DEPTH:
+                                depth_stats = None
+                            else:
+                                scaled_box = tuple(int(coord * SCALE_FOR_MATCHING) for coord in det['box'])
+                                depth_stats = estimate_roi_depth(depth_map, scaled_box)
+                            depth_stats_list.append(depth_stats)
+                        
+                        show_flower_debug_visualization(frame_left, frame_right, detections, depth_stats_list, 
+                                                       target_det_initial, dx, dy, dx_cm_allowed, dy_cm_allowed,
+                                                       rails_steps_log, main_steps_log, w, h, frame_count, "INITIAL")
+                    
+                    print(f"[DEMO] Initial approach: moving dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
+                    move_plan = convert_offsets_to_motor_steps(
+                        position_lock, current_position,
+                        LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX,
+                        dx_cm_allowed * PIXELS_PER_CM, dy_cm_allowed * PIXELS_PER_CM,
+                        PIXELS_PER_CM, MAX_CM_PER_CYCLE, MAX_STEPS_PER_CYCLE, STEPS_PER_CM,
+                        scale_move, RAILS_CALIBRATION, MAIN_CALIBRATION, direction_dict
+                    )
+                    if move_plan:
+                        send_motor_command(client_socket, move_plan)
+                    time.sleep(2.0)
+                    
+                    # Transition to refined approach
+                    approach_state = "refined_approach"
+            
+            elif approach_state == "refined_approach":
+                # Step 2: Crop vision to center 70% (15% margins on sides) and detect again
+                h_crop_margin = int(h * 0.15)
+                w_crop_margin = int(w * 0.15)
+                cropped_frame = frame_left[h_crop_margin:h - h_crop_margin, w_crop_margin:w - w_crop_margin].copy()
                 
-                cv2.line(display_frame_left, (w//2 - 20, h//2), (w//2 + 20, h//2), (255, 0, 0), 2)
-                cv2.line(display_frame_left, (w//2, h//2 - 20), (w//2, h//2 + 20), (255, 0, 0), 2)
+                # Detect flowers in cropped frame
+                detections_refined = detect_flowers(cropped_frame, model, device, YOLO_CONF, CONFIDENCE_THRESHOLD)
                 
-                if target_det:
-                    x1, y1, x2, y2 = target_det['box']
-                    target_x = int((x1 + x2) / 2)
-                    target_y = int((y1 + y2) / 2)
-                    cv2.line(display_frame_left, (w//2, h//2), (target_x, target_y), (0, 255, 255), 2)
-                    cv2.circle(display_frame_left, (target_x, target_y), 10, (0, 255, 0), -1)
+                if detections_refined:
+                    # Get best flower in cropped frame
+                    depth_stats_list = []
+                    for det in detections_refined:
+                        if DEBUG_SKIP_DEPTH:
+                            depth_stats = None
+                        else:
+                            scaled_box = tuple(int(coord * SCALE_FOR_MATCHING) for coord in det['box'])
+                            depth_stats = estimate_roi_depth(depth_map, scaled_box)
+                        depth_stats_list.append(depth_stats)
+                    
+                    target_det_refined, target_depth = select_target_flower(detections_refined, depth_stats_list, cropped_frame.shape[1], cropped_frame.shape[0])
+                    
+                    if target_det_refined:
+                        # Convert cropped coordinates back to full frame
+                        x1, y1, x2, y2 = target_det_refined['box']
+                        x1 += w_crop_margin
+                        y1 += h_crop_margin
+                        x2 += w_crop_margin
+                        y2 += h_crop_margin
+                        
+                        flower_center_x = (x1 + x2) / 2
+                        flower_center_y = (y1 + y2) / 2
+                        
+                        dx = flower_center_x - (w / 2)
+                        dy = flower_center_y - (h / 2)
+                        
+                        # Calculate final movement
+                        dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_X_CM
+                        dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_Y_CM
+                        dx_cm_allowed, dy_cm_allowed, _ = clamp_movement_to_limits(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx_cm_raw, dy_cm_raw, 0.0)
+                        
+                        # Calculate step values for display
+                        rails_steps_log = int(dx_cm_allowed * STEPS_PER_CM * RAILS_CALIBRATION)
+                        main_steps_log = int(dy_cm_allowed * STEPS_PER_CM * MAIN_CALIBRATION)
+                        
+                        # Show debug visualization if enabled
+                        if DEBUG_MOVEMENT:
+                            show_flower_debug_visualization(frame_left, frame_right, detections_refined, depth_stats_list,
+                                                           target_det_refined, dx, dy, dx_cm_allowed, dy_cm_allowed,
+                                                           rails_steps_log, main_steps_log, w, h, frame_count, "REFINED")
+                        
+                        print(f"[DEMO] Refined approach: moving dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
+                        move_plan = convert_offsets_to_motor_steps(
+                            position_lock, current_position,
+                            LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX,
+                            dx_cm_allowed * PIXELS_PER_CM, dy_cm_allowed * PIXELS_PER_CM,
+                            PIXELS_PER_CM, MAX_CM_PER_CYCLE, MAX_STEPS_PER_CYCLE, STEPS_PER_CM,
+                            scale_move, RAILS_CALIBRATION, MAIN_CALIBRATION, direction_dict
+                        )
+                        if move_plan:
+                            send_motor_command(client_socket, move_plan)
+                        time.sleep(2.0)
+                        
+                        # Check if this flower was already visited
+                        pos = get_current_position(position_lock, current_position)
+                        flower_world_x = pos["x"]
+                        flower_world_y = pos["y"]
+                        
+                        if is_flower_already_visited(visited_flowers, flower_world_x, flower_world_y, FLOWER_VISIT_RADIUS_CM):
+                            print(f"[DEMO] Flower already visited, returning to search")
+                            approach_state = "searching"
+                            target_det_initial = None
+                            target_det_refined = None
+                        else:
+                            approach_state = "pollinating"
+                    else:
+                        print(f"[DEMO] Flower lost in refined detection, returning to search")
+                        approach_state = "searching"
+                        target_det_initial = None
+                else:
+                    print(f"[DEMO] Flower lost in cropped frame, returning to search")
+                    approach_state = "searching"
+                    target_det_initial = None
+            
+            elif approach_state == "pollinating":
+                # Step 3: Pollinate sequence
+                print(f"[DEMO] Frame {frame_count}: ARM DOWN 32cm")
+                arm_down_steps = int(-32 * STEPS_PER_CM_ARM)
+                send_motor_command(client_socket, {'arm': arm_down_steps, '_hold_motors': ['arm']})
+                time.sleep(5.0)
                 
-                cv2.putText(display_frame_left, f"[DEMO] Frame: {frame_count} | Detections: {len(detections)}", (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                cv2.putText(display_frame_right, "[DEMO] Right Camera (Reference)", (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                print(f"[DEMO] Running VDG for 2 seconds")
+                van_de_graaf_motor(client_socket, 2000)
+                time.sleep(2.5)
                 
-                # Apply rotation if configured
-                display_frame_left = rotate_frame(display_frame_left, ROTATE_LEFT)
-                display_frame_right = rotate_frame(display_frame_right, ROTATE_RIGHT)
+                print(f"[DEMO] ARM UP 32cm")
+                arm_up_steps = int(32 * STEPS_PER_CM_ARM)
+                send_motor_command(client_socket, {'arm': arm_up_steps, '_hold_motors': ['arm']})
+                time.sleep(5.0)
                 
-                h_display = DISPLAY_HEIGHT // 2
-                w_display = DISPLAY_WIDTH // 2
-                display_frame_left = cv2.resize(display_frame_left, (w_display, h_display))
-                display_frame_right = cv2.resize(display_frame_right, (w_display, h_display))
+                # Mark flower as visited
+                pos = get_current_position(position_lock, current_position)
+                mark_flower_as_visited(visited_flowers, pos["x"], pos["y"])
+                print(f"[DEMO] Pollination complete, flower marked as visited")
                 
-                display_combined = np.hstack([display_frame_right, display_frame_left])
-                cv2.imshow("DEMO MODE - Automatic Flower Tracking", display_combined)
+                # Return to search
+                if saved_search_position:
+                    pos = get_current_position(position_lock, current_position)
+                    dx_to_saved = saved_search_position["x"] - pos["x"]
+                    dy_to_saved = saved_search_position["y"] - pos["y"]
+                    print(f"[DEMO] Returning to search position")
+                    move_plan = convert_offsets_to_motor_steps(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx_to_saved * PIXELS_PER_CM, dy_to_saved * PIXELS_PER_CM, PIXELS_PER_CM, MAX_CM_PER_CYCLE, MAX_STEPS_PER_CYCLE, STEPS_PER_CM, scale_move, RAILS_CALIBRATION, MAIN_CALIBRATION, direction_dict)
+                    if move_plan:
+                        send_motor_command(client_socket, move_plan)
+                    time.sleep(3.0)
                 
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == 27:
-                    demo_stop_flag = True
-                    break
+                approach_state = "searching"
+                target_det_initial = None
+                target_det_refined = None
+                consecutive_no_detect = 0
             
             frame_count += 1
             time.sleep(0.05)
     
     except Exception as e:
         print(f"[DEMO] Error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         print("[DEMO] Demo mode stopped")
         send_motor_command(client_socket, {})
@@ -789,6 +819,8 @@ def keyboard_control_mode():
     - D: Move right (rails -) - hold for continuous movement
     - O: Move arm up 1cm - single press (not continuous)
     - P: Pollinate sequence - single press (down 32cm -> VDG 2s -> up 32cm)
+    - V: Turn van de graaff ON
+    - B: Turn van de graaff OFF
     - ESC: Exit keyboard mode
     """
     global shutdown_flag, current_frame_left, current_frame_right
@@ -801,6 +833,8 @@ def keyboard_control_mode():
     print("[KEYBOARD]   D: Right (rails -) - hold for continuous")
     print("[KEYBOARD]   O: Arm up 1cm - single press")
     print("[KEYBOARD]   P: Pollinate sequence - single press")
+    print("[KEYBOARD]   V: Van de Graaff ON")
+    print("[KEYBOARD]   B: Van de Graaff OFF")
     print("[KEYBOARD]   ESC: Exit")
     print("[KEYBOARD] Initializing arm: moving up 50cm...\n")
     
@@ -827,12 +861,17 @@ def keyboard_control_mode():
     arm_up_processed = False
     pollinate_pressed = False
     pollinate_processed = False
+    vdg_on_pressed = False
+    vdg_on_processed = False
+    vdg_off_pressed = False
+    vdg_off_processed = False
+    vdg_is_on = False  # Track VDG motor state
     
     exit_flag = False
     
     def on_press(key):
         """Handle key press."""
-        nonlocal arm_up_pressed, pollinate_pressed
+        nonlocal arm_up_pressed, pollinate_pressed, vdg_on_pressed, vdg_off_pressed
         try:
             key_char = key.char if hasattr(key, 'char') else None
             if key_char and key_char.lower() in ['w', 's', 'a', 'd']:
@@ -843,12 +882,19 @@ def keyboard_control_mode():
             elif key_char and key_char.lower() == 'p':
                 pollinate_pressed = True
                 print(f"[KEYBOARD] Key pressed: P (pollinate)")
+            elif key_char and key_char.lower() == 'v':
+                vdg_on_pressed = True
+                print(f"[KEYBOARD] Key pressed: V (VDG ON)")
+            elif key_char and key_char.lower() == 'b':
+                vdg_off_pressed = True
+                print(f"[KEYBOARD] Key pressed: B (VDG OFF)")
         except:
             pass
     
     def on_release(key):
         """Handle key release."""
         nonlocal exit_flag, arm_up_pressed, arm_up_processed, pollinate_pressed, pollinate_processed
+        nonlocal vdg_on_pressed, vdg_on_processed, vdg_off_pressed, vdg_off_processed
         try:
             # Check for ESC key to exit
             if key == keyboard.Key.esc:
@@ -866,6 +912,14 @@ def keyboard_control_mode():
                 pollinate_pressed = False
                 pollinate_processed = False  # Allow next press
                 print(f"[KEYBOARD] Key released: P")
+            elif key_char and key_char.lower() == 'v':
+                vdg_on_pressed = False
+                vdg_on_processed = False  # Allow next press
+                print(f"[KEYBOARD] Key released: V")
+            elif key_char and key_char.lower() == 'b':
+                vdg_off_pressed = False
+                vdg_off_processed = False  # Allow next press
+                print(f"[KEYBOARD] Key released: B")
         except:
             pass
     
@@ -893,13 +947,19 @@ def keyboard_control_mode():
             cv2.putText(display_frame, f"Position: X={pos['x']:.1f}cm Y={pos['y']:.1f}cm Z={pos['z']:.1f}cm", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
             
+            # Show VDG status
+            vdg_status = "ON" if vdg_is_on else "OFF"
+            vdg_color = (0, 255, 0) if vdg_is_on else (128, 128, 128)
+            cv2.putText(display_frame, f"VDG: {vdg_status}", (10, 90),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, vdg_color, 2)
+            
             # Show which keys are currently pressed
             active_keys = [k.upper() for k, v in key_states.items() if v]
             if active_keys:
-                cv2.putText(display_frame, f"Active keys: {' '.join(set(active_keys))}", (10, 90),
+                cv2.putText(display_frame, f"Active keys: {' '.join(set(active_keys))}", (10, 120),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 100), 2)
             
-            cv2.putText(display_frame, "W-Forward  S-Backward  A-Left  D-Right  O-ArmUp  P-Pollinate  ESC-Exit", (10, 120),
+            cv2.putText(display_frame, "W-Fwd S-Back A-Left D-Right O-ArmUp P-Poll V-ON B-OFF ESC-Exit", (10, 150),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 0), 1)
             
             h_display = DISPLAY_HEIGHT // 2
@@ -965,28 +1025,50 @@ def keyboard_control_mode():
             if pollinate_pressed and not pollinate_processed:
                 # Execute pollination sequence
                 print(f"[KEYBOARD] Executing pollination sequence...")
-                print(f"[KEYBOARD]   1. Moving arm DOWN 32cm")
-                arm_down_steps = int(-32 * STEPS_PER_CM_ARM)
+                print(f"[KEYBOARD]   1. Moving arm DOWN 34cm")
+                arm_down_steps = int(-35 * STEPS_PER_CM_ARM)
                 send_motor_command(client_socket, {'arm': arm_down_steps, '_hold_motors': ['arm']})
-                time.sleep(5.0)  # Wait for arm to reach flower
                 
                 print(f"[KEYBOARD]   2. Running VDG for 2 seconds")
-                van_de_graaf_motor(client_socket, 2000)
-                time.sleep(2.5)  # Wait for VDG to complete
+                van_de_graaf_motor(client_socket, 50000)
                 
-                print(f"[KEYBOARD]   3. Moving arm UP 32cm")
-                arm_up_steps = int(32 * STEPS_PER_CM_ARM)
+                print(f"[KEYBOARD]   3. Moving arm UP 34cm")
+                arm_up_steps = int(35 * STEPS_PER_CM_ARM)
                 send_motor_command(client_socket, {'arm': arm_up_steps, '_hold_motors': ['arm']})
                 time.sleep(5.0)  # Wait for arm to retract
                 
                 print(f"[KEYBOARD] Pollination sequence complete")
                 pollinate_processed = True
             
-            time.sleep(0.5)
+            # Process VDG on (V key) - just set the flag
+            if vdg_on_pressed and not vdg_on_processed:
+                print(f"[KEYBOARD] Turning VDG ON")
+                vdg_is_on = True
+                vdg_on_processed = True
+            
+            # Process VDG off (B key)
+            if vdg_off_pressed and not vdg_off_processed:
+                print(f"[KEYBOARD] Turning VDG OFF")
+                motor_command = {"van_de_graaf": 0}
+                send_motor_command(client_socket, motor_command)
+                vdg_is_on = False
+                vdg_off_processed = True
+            
+            # Send continuous VDG pulses if ON (short duration allows other commands to be processed)
+            if vdg_is_on:
+                motor_command["van_de_graaf"] = 1000  # 1 second pulse, will be refreshed every loop
+            
+            time.sleep(0.5)  # Controls movement rate and VDG pulse refresh rate
     
     except Exception as e:
         print(f"[KEYBOARD] Error: {e}")
     finally:
+        # Make sure VDG is turned off when exiting
+        if vdg_is_on:
+            print(f"[KEYBOARD] Turning VDG OFF on exit")
+            motor_command = {"van_de_graaf": 0}
+            send_motor_command(client_socket, motor_command)
+        
         listener.stop()
         try:
             cv2.destroyWindow(window_name)
