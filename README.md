@@ -9,16 +9,11 @@
 ## Table of Contents
 
 1. [Quick Start](#quick-start)
-2. [Folder Structure](#folder-structure)
-3. [Entry Points & Usage](#entry-points--usage)
-4. [Environment & Configuration](#environment--configuration)
-5. [Operation Manual](#operation-manual)
-6. [Troubleshooting](#troubleshooting)
-7. [Lessons Learned & Design Rationale](#lessons-learned--design-rationale)
-8. [How to Extend](#how-to-extend)
-9. [Maintenance & Versioning](#maintenance--versioning)
-10. [Contribution / Code Style](#contribution--code-style)
-11. [Contact / License / Changelog](#contact--license--changelog)
+2. [Entry Points & Usage](#entry-points--usage)
+3. [Environment & Configuration](#environment--configuration)
+4. [Troubleshooting](#troubleshooting)
+5. [Contribution](#contribution--code-style)
+6. [Contact / Changelog](#contact--license--changelog)
 
 ---
 
