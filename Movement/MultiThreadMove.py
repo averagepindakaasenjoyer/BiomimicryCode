@@ -9,7 +9,7 @@ import board
 from adafruit_motorkit import MotorKit
 import gpiozero as GPIO                                
 from adafruit_motorkit import MotorKit
-from gpiozero import Motor
+from gpiozero import OutputDevice
 import busio
 import board
 from adafruit_motorkit import MotorKit
@@ -20,11 +20,11 @@ kit1 = MotorKit(i2c=i2c, address=0x60)
 # kit1 = MotorKit(i2c=board.I2C(), address=0x60)
 kit2 = MotorKit(i2c=board.I2C(), address=0x61)
 i2c = busio.I2C(board.SCL, board.SDA)
-motor = Motor(forward=17, backward=27)
+motor = OutputDevice(17, active_high=False, initial_value=False)
 
 
 motor_dict = {
-    "rails" : kit1.stepper1,
+    "rails" : kit1 .stepper1,
     "main": kit1.stepper2,
     "arm": kit2.stepper1,
 }
@@ -148,10 +148,10 @@ def VanDeGraaf_move(times):
     """
     move the Van De Graaf motor for a set amount of time
     """
-    motor.stop()  # stops motor
+    motor.on()  # stops motor
 
     time.sleep(times)
-    motor.forward()  # stops motor
+    motor.off()  # stops motor
 def DCMotor(times):
     """
     Move the dc motor
@@ -171,23 +171,21 @@ if __name__ == "__main__":
         10, 0.02, [kit1.stepper1], False))
     thread3 = threading.Thread(target=move_cm, args=(
         10, 0.02, [kit1.stepper2], False))
-    thread4 = threading.Thread(target=VanDeGraaf_move, args=(20,))
-    thread5 = threading.Thread(target=shake, args=(5,))
+    thread4 = threading.Thread(target=VanDeGraaf_move, args=(5,))
+    thread5 = threading.Thread(target=shake, args=(1,))
     thread6 = threading.Thread(target=DCMotor, args=(0.1,))
 
     # thread1.start()
-    
-    # thread2.start()
+    thread2.start()
     # thread3.start()
-    thread4.start()
+    # thread4.start()
     # thread5.start()
     # thread6.start()
 
-    
-    # thread3.join()
-    # thread2.join()
-    thread4.join()
-    # thread5.join()
     # thread1.join()
-    # thread6.start()
+    thread2.join()
+    # thread3.join()
+    # thread4.join()
+    # thread5.join()
+    # thread6.join()
 
