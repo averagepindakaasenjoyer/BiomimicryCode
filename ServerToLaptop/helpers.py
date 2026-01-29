@@ -344,7 +344,7 @@ def find_flower_center_in_bbox(frame, bbox, use_advanced=False):
     Args:
         frame: Image frame
         bbox: Bounding box as (x1, y1, x2, y2)
-        use_advanced: If True, find yellow region center; if False, return bbox center
+        use_advanced: If True, find yellow circle using HoughCircles; if False, return bbox center
         
     Returns:
         Tuple of (center_x, center_y) in frame coordinates
@@ -359,7 +359,7 @@ def find_flower_center_in_bbox(frame, bbox, use_advanced=False):
         center_y = (y1 + y2) / 2
         return center_x, center_y
     
-    # Advanced: Find yellow region within bbox
+    # Advanced: Find largest yellow circle within bbox using HoughCircles
     try:
         # Crop to bounding box
         crop = frame[y1:y2, x1:x2].copy()
@@ -384,7 +384,39 @@ def find_flower_center_in_bbox(frame, bbox, use_advanced=False):
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         
-        # Find contours in mask
+        # Apply Gaussian blur to smooth the mask for circle detection
+        gray_masked = cv2.GaussianBlur(mask, (9, 9), 0)
+        
+        # Set circle detection parameters
+        h_crop, w_crop = crop.shape[:2]
+        min_r = max(5, int(min(h_crop, w_crop) * 0.05))
+        max_r = int(min(h_crop, w_crop) * 0.4)
+        
+        # Detect circles using HoughCircles
+        circles = cv2.HoughCircles(
+            gray_masked, 
+            cv2.HOUGH_GRADIENT,
+            dp=1.5,
+            minDist=max(h_crop, w_crop) // 2,
+            param1=100,
+            param2=30,
+            minRadius=min_r,
+            maxRadius=max_r
+        )
+        
+        if circles is not None:
+            circles = np.uint16(np.around(circles))
+            # Find largest circle (by radius)
+            largest_circle = max(circles[0], key=lambda c: c[2])
+            circle_x, circle_y, circle_r = largest_circle
+            
+            # Convert back to full frame coordinates
+            center_x = x1 + circle_x
+            center_y = y1 + circle_y
+            print(f"[FLOWER] Advanced estimation: detected yellow circle center at ({center_x}, {center_y}), radius={circle_r}px")
+            return center_x, center_y
+        
+        # No circles found, fallback to center of mass from contours
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if contours:
@@ -400,7 +432,7 @@ def find_flower_center_in_bbox(frame, bbox, use_advanced=False):
                 # Convert back to full frame coordinates
                 center_x = x1 + yellow_center_x
                 center_y = y1 + yellow_center_y
-                print(f"[FLOWER] Advanced estimation: yellow region center at ({center_x}, {center_y})")
+                print(f"[FLOWER] Advanced estimation: using contour center at ({center_x}, {center_y})")
                 return center_x, center_y
         
         # No yellow region found, fallback to center

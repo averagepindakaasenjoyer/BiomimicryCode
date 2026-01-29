@@ -187,8 +187,8 @@ LIMIT_Z_MIN = 0.0       # Bottom/released position
 LIMIT_Z_MAX = 20.0      # Highest position (arm: 20 cm)
 # Arm tip offset from camera center (measured in pixels, converted to cm)
 # Arm tip is at -130px left, +150px down from camera center
-OFFSET_X_CM = 5.03      # Compensate for arm tip being left of center (move right)
-OFFSET_Y_CM = 5.81      # Compensate for arm tip being below center (move forward)
+OFFSET_X_CM = 3.03      # Compensate for arm tip being left of center (move right)
+OFFSET_Y_CM = 5.21      # Compensate for arm tip being below center (move forward)
 
 # =============================
 # Display Thread
