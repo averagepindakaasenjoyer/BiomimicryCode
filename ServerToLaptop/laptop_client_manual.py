@@ -787,26 +787,32 @@ def keyboard_control_mode():
     - S: Move backward (main -) - hold for continuous movement
     - A: Move left (rails +) - hold for continuous movement
     - D: Move right (rails -) - hold for continuous movement
-    - O: Move arm up (+) - hold for continuous movement
-    - P: Move arm down (-) - hold for continuous movement
+    - O: Move arm up 1cm - single press (not continuous)
+    - P: Pollinate sequence - single press (down 32cm -> VDG 2s -> up 32cm)
     - ESC: Exit keyboard mode
     """
     global shutdown_flag, current_frame_left, current_frame_right
     
     print("\n[KEYBOARD] Entering keyboard control mode")
-    print("[KEYBOARD] Controls (press and HOLD for continuous movement):")
-    print("[KEYBOARD]   W: Forward (main +)")
-    print("[KEYBOARD]   S: Backward (main -)")
-    print("[KEYBOARD]   A: Left (rails +)")
-    print("[KEYBOARD]   D: Right (rails -)")
-    print("[KEYBOARD]   O: Arm up")
-    print("[KEYBOARD]   P: Arm down")
+    print("[KEYBOARD] Controls:")
+    print("[KEYBOARD]   W: Forward (main +) - hold for continuous")
+    print("[KEYBOARD]   S: Backward (main -) - hold for continuous")
+    print("[KEYBOARD]   A: Left (rails +) - hold for continuous")
+    print("[KEYBOARD]   D: Right (rails -) - hold for continuous")
+    print("[KEYBOARD]   O: Arm up 1cm - single press")
+    print("[KEYBOARD]   P: Pollinate sequence - single press")
     print("[KEYBOARD]   ESC: Exit")
-    print("[KEYBOARD] Close the window or press ESC to exit\n")
+    print("[KEYBOARD] Initializing arm: moving up 50cm...\n")
+    
+    # Initialize arm: move up 50cm at start
+    arm_init_steps = int(50 * STEPS_PER_CM_ARM)
+    send_motor_command(client_socket, {'arm': arm_init_steps, '_hold_motors': ['arm']})
+    print("[KEYBOARD] Arm initialization sent (50cm up)\n")
+    time.sleep(5.0)  # Wait for arm to reach position
     
     window_name = "KEYBOARD CONTROL MODE - Hold keys for continuous movement (ESC to exit)"
-    step_cm = 0.5  # Movement per frame in cm
-    arm_step_cm = 0.5  # Arm movement per frame in cm
+    step_cm = 1.0  # Movement per frame in cm
+    arm_step_cm = 1.0  # Arm movement per single press in cm
     
     # Key state tracking - using pynput for async key detection
     key_states = {
@@ -814,24 +820,35 @@ def keyboard_control_mode():
         's': False, 'S': False,
         'a': False, 'A': False,
         'd': False, 'D': False,
-        'o': False, 'O': False,
-        'p': False, 'P': False,
     }
+    
+    # Track single-press keys separately
+    arm_up_pressed = False
+    arm_up_processed = False
+    pollinate_pressed = False
+    pollinate_processed = False
+    
     exit_flag = False
     
     def on_press(key):
         """Handle key press."""
+        nonlocal arm_up_pressed, pollinate_pressed
         try:
             key_char = key.char if hasattr(key, 'char') else None
-            if key_char and key_char.lower() in ['w', 's', 'a', 'd', 'o', 'p']:
+            if key_char and key_char.lower() in ['w', 's', 'a', 'd']:
                 key_states[key_char] = True
-                print(f"[KEYBOARD] Key pressed: {key_char.upper()}")
+            elif key_char and key_char.lower() == 'o':
+                arm_up_pressed = True
+                print(f"[KEYBOARD] Key pressed: O (arm up)")
+            elif key_char and key_char.lower() == 'p':
+                pollinate_pressed = True
+                print(f"[KEYBOARD] Key pressed: P (pollinate)")
         except:
             pass
     
     def on_release(key):
         """Handle key release."""
-        nonlocal exit_flag
+        nonlocal exit_flag, arm_up_pressed, arm_up_processed, pollinate_pressed, pollinate_processed
         try:
             # Check for ESC key to exit
             if key == keyboard.Key.esc:
@@ -839,9 +856,16 @@ def keyboard_control_mode():
                 return False  # Stop listener
             
             key_char = key.char if hasattr(key, 'char') else None
-            if key_char and key_char.lower() in ['w', 's', 'a', 'd', 'o', 'p']:
+            if key_char and key_char.lower() in ['w', 's', 'a', 'd']:
                 key_states[key_char] = False
-                print(f"[KEYBOARD] Key released: {key_char.upper()}")
+            elif key_char and key_char.lower() == 'o':
+                arm_up_pressed = False
+                arm_up_processed = False  # Allow next press
+                print(f"[KEYBOARD] Key released: O")
+            elif key_char and key_char.lower() == 'p':
+                pollinate_pressed = False
+                pollinate_processed = False  # Allow next press
+                print(f"[KEYBOARD] Key released: P")
         except:
             pass
     
@@ -864,7 +888,7 @@ def keyboard_control_mode():
             
             # Add info text
             pos = get_current_position(position_lock, current_position)
-            cv2.putText(display_frame, "KEYBOARD CONTROL MODE - Hold keys for movement", (10, 30),
+            cv2.putText(display_frame, "KEYBOARD CONTROL MODE", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             cv2.putText(display_frame, f"Position: X={pos['x']:.1f}cm Y={pos['y']:.1f}cm Z={pos['z']:.1f}cm", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
@@ -875,7 +899,7 @@ def keyboard_control_mode():
                 cv2.putText(display_frame, f"Active keys: {' '.join(set(active_keys))}", (10, 90),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 100), 2)
             
-            cv2.putText(display_frame, "W-Forward  S-Backward  A-Left  D-Right  O-ArmUp  P-ArmDown  ESC-Exit", (10, 120),
+            cv2.putText(display_frame, "W-Forward  S-Backward  A-Left  D-Right  O-ArmUp  P-Pollinate  ESC-Exit", (10, 120),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 0), 1)
             
             h_display = DISPLAY_HEIGHT // 2
@@ -890,13 +914,11 @@ def keyboard_control_mode():
                 exit_flag = True
                 break
             
-            # Process continuous movement based on held keys
+            # Process continuous movement based on held keys (W/A/S/D only)
             motor_command = {}
             
-            # Check for movement keys (combining multiple key presses)
             rails_movement = 0
             main_movement = 0
-            arm_movement = 0
             
             # Rails control (A/D)
             if key_states['a'] or key_states['A']:  # Left (rails increase)
@@ -920,33 +942,47 @@ def keyboard_control_mode():
                 main_movement -= steps
                 update_position(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, delta_y=-step_cm)
             
-            # Arm control (O/P)
-            if key_states['o'] or key_states['O']:  # Arm up
-                steps = int(arm_step_cm * STEPS_PER_CM_ARM)
-                arm_movement += steps
-                update_position(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, delta_z=arm_step_cm)
-            
-            if key_states['p'] or key_states['P']:  # Arm down
-                steps = int(arm_step_cm * STEPS_PER_CM_ARM)
-                arm_movement -= steps
-                update_position(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, delta_z=-arm_step_cm)
-            
-            # Build and send motor command with accumulated movements
+            # Build and send motor command for continuous movements
             if rails_movement != 0:
                 motor_command['rails'] = rails_movement
             
             if main_movement != 0:
                 motor_command['main'] = main_movement
             
-            if arm_movement != 0:
-                motor_command['arm'] = arm_movement
-                motor_command['_hold_motors'] = ['arm']
-            
-            # Send command if any movement is active
             if motor_command:
                 send_motor_command(client_socket, motor_command)
             
-            time.sleep(0.001)  # Very tight loop for responsiveness
+            # Process single-press keys (O for arm up, P for pollinate)
+            if arm_up_pressed and not arm_up_processed:
+                # Execute arm up movement
+                arm_steps = int(arm_step_cm * STEPS_PER_CM_ARM)
+                arm_command = {'arm': arm_steps, '_hold_motors': ['arm']}
+                print(f"[KEYBOARD] Moving ARM UP 1cm")
+                send_motor_command(client_socket, arm_command)
+                update_position(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, delta_z=arm_step_cm)
+                arm_up_processed = True
+            
+            if pollinate_pressed and not pollinate_processed:
+                # Execute pollination sequence
+                print(f"[KEYBOARD] Executing pollination sequence...")
+                print(f"[KEYBOARD]   1. Moving arm DOWN 32cm")
+                arm_down_steps = int(-32 * STEPS_PER_CM_ARM)
+                send_motor_command(client_socket, {'arm': arm_down_steps, '_hold_motors': ['arm']})
+                time.sleep(5.0)  # Wait for arm to reach flower
+                
+                print(f"[KEYBOARD]   2. Running VDG for 2 seconds")
+                van_de_graaf_motor(client_socket, 2000)
+                time.sleep(2.5)  # Wait for VDG to complete
+                
+                print(f"[KEYBOARD]   3. Moving arm UP 32cm")
+                arm_up_steps = int(32 * STEPS_PER_CM_ARM)
+                send_motor_command(client_socket, {'arm': arm_up_steps, '_hold_motors': ['arm']})
+                time.sleep(5.0)  # Wait for arm to retract
+                
+                print(f"[KEYBOARD] Pollination sequence complete")
+                pollinate_processed = True
+            
+            time.sleep(0.5)
     
     except Exception as e:
         print(f"[KEYBOARD] Error: {e}")
