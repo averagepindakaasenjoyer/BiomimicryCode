@@ -12,8 +12,7 @@
 2. [Entry Points & Usage](#entry-points--usage)
 3. [Environment & Configuration](#environment--configuration)
 4. [Troubleshooting](#troubleshooting)
-5. [Contribution](#contribution--code-style)
-6. [Contact / Changelog](#contact--license--changelog)
+5. [Contact / Changelog](#contact)
 
 ---
 
@@ -734,7 +733,7 @@ i2cdetect -y 1  # Should show 0x60, 0x61 with "60" and "61"
 
 ### Contact
 
-**Original Authors:** <<ASSUME: Add author names and contact info>>
+**Original Authors:** 
 - **Conributer 1:** [Matthias Meijer] - [averagepindakaasenjoyer]
 - **Conributer 2:** [Thijn van Veen] - [Kapithijn]
 
