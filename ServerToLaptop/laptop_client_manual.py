@@ -31,8 +31,10 @@ from helpers import (
     reset_position, 
     print_position,
     clamp_movement_to_limits, 
-    is_flower_already_visited, 
-    mark_flower_as_visited,
+    is_flower_already_pollinated, 
+    mark_flower_as_pollinated,
+    is_flower_already_visited,  # Legacy compatibility
+    mark_flower_as_visited,      # Legacy compatibility
     rotate_frame, 
     scale_intrinsics, 
     setup_stereo_rectification, 
@@ -41,6 +43,7 @@ from helpers import (
     detect_flowers, 
     estimate_roi_depth, 
     select_target_flower,
+    find_flower_center_in_bbox,
     convert_offsets_to_motor_steps, 
     convert_depth_to_arm_steps, 
     print_help
@@ -89,8 +92,8 @@ STEPS_PER_CM = STEPS_PER_REV / CIRCUMFERENCE_CM
 scale_move = 1.0  # Changed from 0.1 - was causing 0-step commands
 
 # Calibration factors for each axis (adjust based on actual measurements)
-RAILS_CALIBRATION = 0.67  # Rails was at 45cm when tracking showed 30cm (30/45 = 0.67)
-MAIN_CALIBRATION = 1.0    # Main was accurate
+RAILS_CALIBRATION = 1.0
+MAIN_CALIBRATION = 1.0
 
 PIXELS_PER_CM = 25.84
 MAX_CM_PER_CYCLE = 10.0
@@ -100,8 +103,7 @@ WHEEL_DIAMETER_CM_ARM = 3.5
 CIRCUMFERENCE_CM_ARM = WHEEL_DIAMETER_CM_ARM * np.pi
 STEPS_PER_REV_ARM = 200
 STEPS_PER_CM_ARM = STEPS_PER_REV_ARM / CIRCUMFERENCE_CM_ARM
-ARM_CALIBRATION_FACTOR = 1.0  # Adjust if arm movement doesn't match commands
-# If arm moves 7 cm when commanded 10 cm, set this to 10/7 ≈ 1.429
+ARM_CALIBRATION_FACTOR = 1.0  
 STEPS_PER_CM_ARM = STEPS_PER_CM_ARM * ARM_CALIBRATION_FACTOR
 
 # Arm bottom position offset compensation
@@ -109,10 +111,10 @@ ARM_BOTTOM_OFFSET_CM = 1.5  # Extra distance needed when arm is at bottom
 arm_is_at_bottom = True  # Track if arm is at bottom position
 
 direction_dict = {
-    "front": [("main", -1), ("main", -1)],
-    "rear": [("main", 1), ("main", 1)],
-    "right": [("rails", -1), ("rails", -1)],
-    "left": [("rails", 1), ("rails", 1)],
+    "front": [("main", -1)],
+    "rear": [("main", 1)],
+    "right": [("rails", -1)],
+    "left": [("rails", 1)],
     "up": [("arm", 1)],
     "down": [("arm", -1)],
 }
@@ -122,11 +124,15 @@ direction_dict = {
 DEBUG_MOVEMENT = True  # Set to True to stop at flower and display movement calculations
 DEBUG_SKIP_DEPTH = False  # Set to True to skip depth estimation and detection
 
+# Advanced flower estimation
+USE_ADVANCED_FLOWER_ESTIMATION = True  # If True, find yellow region within bounding box; if False, use center
+
 # =============================
-# Visited Flowers Tracking
+# Pollinated Flowers Tracking
 # =============================
-visited_flowers = []  # list of dicts: {"x": ..., "y": ..., "timestamp": ...}
-FLOWER_VISIT_RADIUS_CM = 5.0  # Minimum distance (cm) to consider a flower as "new"
+pollinated_flowers = []  # list of dicts: {"x": ..., "y": ..., "timestamp": ...}
+POLLINATION_EXCLUSION_RADIUS_CM = 15.0  # Radius around pollinated flowers where no new pollination occurs
+FLOWER_VISIT_RADIUS_CM = 5.0  # Minimum distance (cm) to consider a flower as "new" (legacy, keeping for compatibility)
 
 # =============================
 # Load Models and Calibration
@@ -382,7 +388,8 @@ def frame_reception_thread():
 # =============================
 def show_flower_debug_visualization(frame_left, frame_right, detections, depth_stats_list, target_det, 
                                      dx, dy, dx_cm_allowed, dy_cm_allowed, rails_steps_log, main_steps_log, 
-                                     w, h, frame_count, stage_name="DETECTION"):
+                                     w, h, frame_count, stage_name="DETECTION", pollinated_flowers=None, 
+                                     current_position=None, pixels_per_cm=None, exclusion_radius_cm=None):
     """Display debug visualization for flower detection and movement calculations.
     
     Args:
@@ -429,10 +436,15 @@ def show_flower_debug_visualization(frame_left, frame_right, detections, depth_s
     # Draw flower center and line from center to flower
     if target_det:
         x1, y1, x2, y2 = target_det['box']
-        target_x = int((x1 + x2) / 2)
-        target_y = int((y1 + y2) / 2)
+        # Use advanced estimation if enabled, otherwise use bbox center
+        target_x, target_y = find_flower_center_in_bbox(frame_left, (x1, y1, x2, y2), USE_ADVANCED_FLOWER_ESTIMATION)
+        target_x = int(target_x)
+        target_y = int(target_y)
         cv2.line(display_frame_left, (w//2, h//2), (target_x, target_y), (0, 255, 255), 2)
-        cv2.circle(display_frame_left, (target_x, target_y), 10, (0, 255, 0), -1)
+        # Draw circle with different radius/color based on estimation mode
+        circle_color = (255, 255, 0) if USE_ADVANCED_FLOWER_ESTIMATION else (0, 255, 0)  # Cyan if advanced, Green if simple
+        circle_radius = 15 if USE_ADVANCED_FLOWER_ESTIMATION else 10
+        cv2.circle(display_frame_left, (target_x, target_y), circle_radius, circle_color, -1)
     
     # Draw arm tip position marker (-130px left, +150px down from center)
     arm_tip_x = int(w//2 - 130)
@@ -444,9 +456,39 @@ def show_flower_debug_visualization(frame_left, frame_right, detections, depth_s
         if target_det:
             cv2.line(display_frame_left, (arm_tip_x, arm_tip_y), (target_x, target_y), (100, 200, 255), 2)
     
+    # Draw pollinated flower exclusion zones if provided
+    if pollinated_flowers is not None and current_position is not None and pixels_per_cm is not None and exclusion_radius_cm is not None:
+        pos = get_current_position(position_lock, current_position)
+        for pf in pollinated_flowers:
+            # Calculate relative position of pollinated flower to current camera position
+            # Pollinated flower is at world position (pf['x'], pf['y'])
+            # Camera is at world position (pos['x'], pos['y'])
+            # We need to convert this to pixels in the camera frame
+            
+            # World offset from current position
+            dx_world = pf['x'] - pos['x']
+            dy_world = pf['y'] - pos['y']
+            
+            # Convert to pixels (note: dy inverted because image Y increases downward)
+            dx_pixels = dx_world * pixels_per_cm
+            dy_pixels = -dy_world * pixels_per_cm  # Inverted for image coordinates
+            
+            # Position in image coordinates (relative to center)
+            pf_image_x = int(w//2 + dx_pixels - OFFSET_X_CM * pixels_per_cm)
+            pf_image_y = int(h//2 + dy_pixels - OFFSET_Y_CM * pixels_per_cm)
+            
+            # Draw exclusion radius
+            radius_pixels = int(exclusion_radius_cm * pixels_per_cm)
+            if -radius_pixels <= pf_image_x < w + radius_pixels and -radius_pixels <= pf_image_y < h + radius_pixels:
+                cv2.circle(display_frame_left, (pf_image_x, pf_image_y), radius_pixels, (0, 0, 255), 2)
+                cv2.circle(display_frame_left, (pf_image_x, pf_image_y), 8, (0, 0, 255), -1)
+                cv2.putText(display_frame_left, "POLLINATED", (pf_image_x-50, pf_image_y-radius_pixels-10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+    
     # Add debug info to display
     pos = get_current_position(position_lock, current_position)
-    cv2.putText(display_frame_left, f"[{stage_name}] FLOWER ESTIMATION - Frame {frame_count}", (10, 30),
+    pollinated_count = len(pollinated_flowers) if pollinated_flowers is not None else 0
+    cv2.putText(display_frame_left, f"[{stage_name}] FLOWER ESTIMATION - Frame {frame_count} | Pollinated: {pollinated_count}", (10, 30),
                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
     cv2.putText(display_frame_left, f"FLOWER: dx={dx:.0f}px, dy={dy:.0f}px", (10, 60),
                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
@@ -465,13 +507,11 @@ def show_flower_debug_visualization(frame_left, frame_right, detections, depth_s
     display_frame_left = rotate_frame(display_frame_left, ROTATE_LEFT)
     display_frame_right = rotate_frame(display_frame_right, ROTATE_RIGHT)
     
-    h_display = DISPLAY_HEIGHT // 2
-    w_display = DISPLAY_WIDTH // 2
+    h_display = DISPLAY_HEIGHT
+    w_display = DISPLAY_WIDTH
     display_frame_left = cv2.resize(display_frame_left, (w_display, h_display))
-    display_frame_right = cv2.resize(display_frame_right, (w_display, h_display))
     
-    display_combined = np.hstack([display_frame_right, display_frame_left])
-    cv2.imshow("DEMO MODE - Automatic Flower Tracking", display_combined)
+    cv2.imshow("DEMO MODE - Automatic Flower Tracking", display_frame_left)
     
     # Print debug info to console
     print(f"\n[DEMO] {stage_name} ESTIMATION - DEBUG MODE")
@@ -604,12 +644,38 @@ def demo_mode_worker():
                         if move_plan:
                             send_motor_command(client_socket, move_plan)
                 else:
-                    # Flower detected! Transition to initial approach
-                    consecutive_no_detect = 0
+                    # Flower detected! Filter out already-pollinated flowers
+                    # NOTE: Don't reset consecutive_no_detect yet - only reset after confirming valid flowers
                     
-                    # Get best flower (select_target_flower already scores by depth/distance)
+                    # Get current position to filter flowers
+                    pos = get_current_position(position_lock, current_position)
+                    
+                    # Filter detections to exclude pollinated flowers
+                    valid_detections = []
                     depth_stats_list = []
                     for det in detections:
+                        # Estimate approximate world position of this flower
+                        x1, y1, x2, y2 = det['box']
+                        flower_center_x, flower_center_y = find_flower_center_in_bbox(
+                            frame_left, (x1, y1, x2, y2), USE_ADVANCED_FLOWER_ESTIMATION
+                        )
+                        
+                        # Calculate offset from camera center
+                        dx = flower_center_x - (w / 2)
+                        dy = (h / 2) - flower_center_y
+                        
+                        # Estimate world position (rough approximation)
+                        # This is the position where the arm TIP would be if we moved to center on this flower
+                        estimated_x = pos["x"] + (dx / PIXELS_PER_CM) + OFFSET_X_CM
+                        estimated_y = pos["y"] + (dy / PIXELS_PER_CM) + OFFSET_Y_CM
+                        
+                        # Check if this flower is too close to a pollinated flower
+                        if is_flower_already_pollinated(pollinated_flowers, estimated_x, estimated_y, POLLINATION_EXCLUSION_RADIUS_CM):
+                            print(f"[DEMO] Skipping flower at estimated position ({estimated_x:.2f}, {estimated_y:.2f}) - within exclusion radius")
+                            continue
+                        
+                        # This flower is valid
+                        valid_detections.append(det)
                         if DEBUG_SKIP_DEPTH:
                             depth_stats = None
                         else:
@@ -617,7 +683,18 @@ def demo_mode_worker():
                             depth_stats = estimate_roi_depth(depth_map, scaled_box)
                         depth_stats_list.append(depth_stats)
                     
-                    target_det_initial, target_depth = select_target_flower(detections, depth_stats_list, w, h)
+                    # Check if we have any valid (unpollinated) flowers
+                    if not valid_detections:
+                        print(f"[DEMO] All detected flowers have been pollinated, continuing search...")
+                        # Don't reset consecutive_no_detect - treat as if no flowers detected
+                        consecutive_no_detect += 1
+                        continue
+                    
+                    # Get best flower from valid detections
+                    # Now we know we have valid flowers, reset the no-detection counter
+                    consecutive_no_detect = 0
+                    
+                    target_det_initial, target_depth = select_target_flower(valid_detections, depth_stats_list, w, h)
                     
                     if target_det_initial:
                         saved_search_position = get_current_position(position_lock, current_position).copy()
@@ -628,8 +705,9 @@ def demo_mode_worker():
                 # Step 1: Move to initial flower estimation
                 if target_det_initial:
                     x1, y1, x2, y2 = target_det_initial['box']
-                    flower_center_x = (x1 + x2) / 2
-                    flower_center_y = (y1 + y2) / 2
+                    flower_center_x, flower_center_y = find_flower_center_in_bbox(
+                        frame_left, (x1, y1, x2, y2), USE_ADVANCED_FLOWER_ESTIMATION
+                    )
                     
                     dx = flower_center_x - (w / 2)
                     dy = (h / 2) - flower_center_y  # Inverted: top of image = forward
@@ -656,7 +734,9 @@ def demo_mode_worker():
                         
                         show_flower_debug_visualization(frame_left, frame_right, detections, depth_stats_list, 
                                                        target_det_initial, dx, dy, dx_cm_allowed, dy_cm_allowed,
-                                                       rails_steps_log, main_steps_log, w, h, frame_count, "INITIAL")
+                                                       rails_steps_log, main_steps_log, w, h, frame_count, "INITIAL",
+                                                       pollinated_flowers, current_position, PIXELS_PER_CM, 
+                                                       POLLINATION_EXCLUSION_RADIUS_CM)
                     
                     print(f"[DEMO] Initial approach: moving dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
                     move_plan = convert_offsets_to_motor_steps(
@@ -683,9 +763,38 @@ def demo_mode_worker():
                 detections_refined = detect_flowers(cropped_frame, model, device, YOLO_CONF, CONFIDENCE_THRESHOLD)
                 
                 if detections_refined:
-                    # Get best flower in cropped frame
+                    # Filter out pollinated flowers before selecting target
+                    pos = get_current_position(position_lock, current_position)
+                    valid_detections_refined = []
                     depth_stats_list = []
+                    
                     for det in detections_refined:
+                        # Convert cropped coordinates to full frame for position estimation
+                        x1_crop, y1_crop, x2_crop, y2_crop = det['box']
+                        x1_full = x1_crop + w_crop_margin
+                        y1_full = y1_crop + h_crop_margin
+                        x2_full = x2_crop + w_crop_margin
+                        y2_full = y2_crop + h_crop_margin
+                        
+                        flower_center_x, flower_center_y = find_flower_center_in_bbox(
+                            frame_left, (x1_full, y1_full, x2_full, y2_full), USE_ADVANCED_FLOWER_ESTIMATION
+                        )
+                        
+                        # Calculate offset from camera center
+                        dx_temp = flower_center_x - (w / 2)
+                        dy_temp = (h / 2) - flower_center_y
+                        
+                        # Estimate world position (where arm tip would be after moving)
+                        estimated_x = pos["x"] + (dx_temp / PIXELS_PER_CM) + OFFSET_X_CM
+                        estimated_y = pos["y"] + (dy_temp / PIXELS_PER_CM) + OFFSET_Y_CM
+                        
+                        # Check if this flower is too close to a pollinated flower
+                        if is_flower_already_pollinated(pollinated_flowers, estimated_x, estimated_y, POLLINATION_EXCLUSION_RADIUS_CM):
+                            print(f"[DEMO] [REFINED] Skipping flower at estimated position ({estimated_x:.2f}, {estimated_y:.2f}) - within exclusion radius")
+                            continue
+                        
+                        # This flower is valid
+                        valid_detections_refined.append(det)
                         if DEBUG_SKIP_DEPTH:
                             depth_stats = None
                         else:
@@ -693,79 +802,90 @@ def demo_mode_worker():
                             depth_stats = estimate_roi_depth(depth_map, scaled_box)
                         depth_stats_list.append(depth_stats)
                     
-                    target_det_refined, target_depth = select_target_flower(detections_refined, depth_stats_list, cropped_frame.shape[1], cropped_frame.shape[0])
+                    # Check if we have any valid (unpollinated) flowers
+                    if not valid_detections_refined:
+                        print(f"[DEMO] [REFINED] All detected flowers have been pollinated, returning to search")
+                        approach_state = "searching"
+                        target_det_initial = None
+                        target_det_refined = None
+                    else:
+                        target_det_refined, target_depth = select_target_flower(valid_detections_refined, depth_stats_list, cropped_frame.shape[1], cropped_frame.shape[0])
                     
-                    if target_det_refined:
-                        # Convert cropped coordinates back to full frame
-                        x1, y1, x2, y2 = target_det_refined['box']
-                        x1 += w_crop_margin
-                        y1 += h_crop_margin
-                        x2 += w_crop_margin
-                        y2 += h_crop_margin
-                        
-                        flower_center_x = (x1 + x2) / 2
-                        flower_center_y = (y1 + y2) / 2
-                        
-                        dx = flower_center_x - (w / 2)
-                        dy = (h / 2) - flower_center_y  # Inverted: top of image = forward
-                        
-                        # Calculate final movement (with arm offset to position arm tip on flower)
-                        dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_X_CM
-                        dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_Y_CM
-                        dx_cm_allowed, dy_cm_allowed, _ = clamp_movement_to_limits(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx_cm_raw, dy_cm_raw, 0.0)
-                        
-                        # Calculate step values for display
-                        rails_steps_log = int(dx_cm_allowed * STEPS_PER_CM * RAILS_CALIBRATION)
-                        main_steps_log = int(dy_cm_allowed * STEPS_PER_CM * MAIN_CALIBRATION)
-                        
-                        # Show debug visualization if enabled
-                        if DEBUG_MOVEMENT:
-                            # Adjust all detection coordinates from cropped frame to full frame for visualization
-                            detections_adjusted = []
-                            for det in detections_refined:
-                                det_copy = det.copy()
-                                x1, y1, x2, y2 = det_copy['box']
-                                det_copy['box'] = (x1 + w_crop_margin, y1 + h_crop_margin, 
-                                                   x2 + w_crop_margin, y2 + h_crop_margin)
-                                detections_adjusted.append(det_copy)
+                        if target_det_refined:
+                            # Convert cropped coordinates back to full frame
+                            x1, y1, x2, y2 = target_det_refined['box']
+                            x1 += w_crop_margin
+                            y1 += h_crop_margin
+                            x2 += w_crop_margin
+                            y2 += h_crop_margin
                             
-                            # Also adjust target detection for visualization
-                            target_det_adjusted = target_det_refined.copy()
-                            target_det_adjusted['box'] = (x1 + w_crop_margin, y1 + h_crop_margin, 
-                                                          x2 + w_crop_margin, y2 + h_crop_margin)
+                            flower_center_x, flower_center_y = find_flower_center_in_bbox(
+                                frame_left, (x1, y1, x2, y2), USE_ADVANCED_FLOWER_ESTIMATION
+                            )
                             
-                            show_flower_debug_visualization(frame_left, frame_right, detections_adjusted, depth_stats_list,
-                                                           target_det_adjusted, dx, dy, dx_cm_allowed, dy_cm_allowed,
-                                                           rails_steps_log, main_steps_log, w, h, frame_count, "REFINED")
-                        
-                        print(f"[DEMO] Refined approach: moving dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
-                        move_plan = convert_offsets_to_motor_steps(
-                            position_lock, current_position,
-                            LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX,
-                            dx_cm_allowed * PIXELS_PER_CM, dy_cm_allowed * PIXELS_PER_CM,
-                            PIXELS_PER_CM, MAX_CM_PER_CYCLE, MAX_STEPS_PER_CYCLE, STEPS_PER_CM,
-                            scale_move, RAILS_CALIBRATION, MAIN_CALIBRATION, direction_dict
-                        )
-                        if move_plan:
-                            send_motor_command(client_socket, move_plan)
-                        time.sleep(2.0)
-                        
-                        # Check if this flower was already visited
-                        pos = get_current_position(position_lock, current_position)
-                        flower_world_x = pos["x"]
-                        flower_world_y = pos["y"]
-                        
-                        if is_flower_already_visited(visited_flowers, flower_world_x, flower_world_y, FLOWER_VISIT_RADIUS_CM):
-                            print(f"[DEMO] Flower already visited, returning to search")
+                            dx = flower_center_x - (w / 2)
+                            dy = (h / 2) - flower_center_y  # Inverted: top of image = forward
+                            
+                            # Calculate final movement (with arm offset to position arm tip on flower)
+                            dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_X_CM
+                            dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_Y_CM
+                            dx_cm_allowed, dy_cm_allowed, _ = clamp_movement_to_limits(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx_cm_raw, dy_cm_raw, 0.0)
+                            
+                            # Calculate step values for display
+                            rails_steps_log = int(dx_cm_allowed * STEPS_PER_CM * RAILS_CALIBRATION)
+                            main_steps_log = int(dy_cm_allowed * STEPS_PER_CM * MAIN_CALIBRATION)
+                            
+                            # Show debug visualization if enabled
+                            if DEBUG_MOVEMENT:
+                                # Adjust all detection coordinates from cropped frame to full frame for visualization
+                                detections_adjusted = []
+                                for det in valid_detections_refined:
+                                    det_copy = det.copy()
+                                    x1_adj, y1_adj, x2_adj, y2_adj = det_copy['box']
+                                    det_copy['box'] = (x1_adj + w_crop_margin, y1_adj + h_crop_margin, 
+                                                       x2_adj + w_crop_margin, y2_adj + h_crop_margin)
+                                    detections_adjusted.append(det_copy)
+                                
+                                # Also adjust target detection for visualization
+                                target_det_adjusted = target_det_refined.copy()
+                                target_det_adjusted['box'] = (x1, y1, x2, y2)
+                                
+                                show_flower_debug_visualization(frame_left, frame_right, detections_adjusted, depth_stats_list,
+                                                               target_det_adjusted, dx, dy, dx_cm_allowed, dy_cm_allowed,
+                                                               rails_steps_log, main_steps_log, w, h, frame_count, "REFINED",
+                                                               pollinated_flowers, current_position, PIXELS_PER_CM,
+                                                               POLLINATION_EXCLUSION_RADIUS_CM)
+                            
+                            print(f"[DEMO] Refined approach: moving dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
+                            move_plan = convert_offsets_to_motor_steps(
+                                position_lock, current_position,
+                                LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX,
+                                dx_cm_allowed * PIXELS_PER_CM, dy_cm_allowed * PIXELS_PER_CM,
+                                PIXELS_PER_CM, MAX_CM_PER_CYCLE, MAX_STEPS_PER_CYCLE, STEPS_PER_CM,
+                                scale_move, RAILS_CALIBRATION, MAIN_CALIBRATION, direction_dict
+                            )
+                            if move_plan:
+                                send_motor_command(client_socket, move_plan)
+                            time.sleep(2.0)
+                            
+                            # Final check before pollination - verify we're not too close to a pollinated flower
+                            pos = get_current_position(position_lock, current_position)
+                            flower_world_x = pos["x"]
+                            flower_world_y = pos["y"]
+                            
+                            if is_flower_already_pollinated(pollinated_flowers, flower_world_x, flower_world_y, POLLINATION_EXCLUSION_RADIUS_CM):
+                                print(f"[DEMO] [FINAL CHECK] Flower already pollinated (within exclusion zone), returning to search")
+                                approach_state = "searching"
+                                target_det_initial = None
+                                target_det_refined = None
+                            else:
+                                print(f"[DEMO] [FINAL CHECK] Flower confirmed as new target, proceeding to pollination")
+                                approach_state = "pollinating"
+                        else:
+                            print(f"[DEMO] Flower lost in refined detection, returning to search")
                             approach_state = "searching"
                             target_det_initial = None
                             target_det_refined = None
-                        else:
-                            approach_state = "pollinating"
-                    else:
-                        print(f"[DEMO] Flower lost in refined detection, returning to search")
-                        approach_state = "searching"
-                        target_det_initial = None
                 else:
                     print(f"[DEMO] Flower lost in cropped frame, returning to search")
                     approach_state = "searching"
@@ -786,10 +906,10 @@ def demo_mode_worker():
                 send_motor_command(client_socket, {'arm': arm_up_steps, '_hold_motors': ['arm']})
                 time.sleep(5.0)
                 
-                # Mark flower as visited
+                # Mark flower as pollinated
                 pos = get_current_position(position_lock, current_position)
-                mark_flower_as_visited(visited_flowers, pos["x"], pos["y"])
-                print(f"[DEMO] Pollination complete, flower marked as visited")
+                mark_flower_as_pollinated(pollinated_flowers, pos["x"], pos["y"])
+                print(f"[DEMO] Pollination complete!")
                 
                 # Return to search
                 if saved_search_position:
@@ -936,57 +1056,68 @@ def keyboard_control_mode():
         except:
             pass
     
+    display_stop_event = threading.Event()
+
+    def keyboard_display_thread():
+        """Fast UI refresh loop for keyboard control mode."""
+        nonlocal exit_flag
+        try:
+            while not shutdown_flag and not exit_flag and not display_stop_event.is_set():
+                with frame_lock:
+                    if current_frame_left is None:
+                        time.sleep(0.01)
+                        continue
+                    display_frame = current_frame_left.copy()
+
+                # Apply rotation if configured
+                display_frame = rotate_frame(display_frame, ROTATE_LEFT)
+
+                # Add info text
+                pos = get_current_position(position_lock, current_position)
+                cv2.putText(display_frame, "KEYBOARD CONTROL MODE", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(display_frame, f"Position: X={pos['x']:.1f}cm Y={pos['y']:.1f}cm Z={pos['z']:.1f}cm", (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+
+                # Show VDG status
+                vdg_status = "ON" if vdg_is_on else "OFF"
+                vdg_color = (0, 255, 0) if vdg_is_on else (128, 128, 128)
+                cv2.putText(display_frame, f"VDG: {vdg_status}", (10, 90),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, vdg_color, 2)
+
+                # Show which keys are currently pressed
+                active_keys = [k.upper() for k, v in key_states.items() if v]
+                if active_keys:
+                    cv2.putText(display_frame, f"Active keys: {' '.join(set(active_keys))}", (10, 120),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 100), 2)
+
+                cv2.putText(display_frame, "W-Fwd S-Back A-Left D-Right O-ArmUp P-Poll V-ON B-OFF ESC-Exit", (10, 150),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 0), 1)
+
+                h_display = DISPLAY_HEIGHT
+                w_display = DISPLAY_WIDTH
+                display_frame = cv2.resize(display_frame, (w_display, h_display))
+
+                cv2.imshow(window_name, display_frame)
+
+                # Non-blocking display (1ms wait for window events)
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27:  # ESC in OpenCV window
+                    exit_flag = True
+                    break
+        finally:
+            display_stop_event.set()
+
     # Start keyboard listener in background
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
     print("[KEYBOARD] Keyboard listener started (async)\n")
+
+    display_thread_obj = threading.Thread(target=keyboard_display_thread, daemon=True)
+    display_thread_obj.start()
     
     try:
         while not shutdown_flag and not exit_flag:
-            # Get current frame for display
-            with frame_lock:
-                if current_frame_left is None:
-                    time.sleep(0.01)
-                    continue
-                display_frame = current_frame_left.copy()
-            
-            # Apply rotation if configured
-            display_frame = rotate_frame(display_frame, ROTATE_LEFT)
-            
-            # Add info text
-            pos = get_current_position(position_lock, current_position)
-            cv2.putText(display_frame, "KEYBOARD CONTROL MODE", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(display_frame, f"Position: X={pos['x']:.1f}cm Y={pos['y']:.1f}cm Z={pos['z']:.1f}cm", (10, 60),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-            
-            # Show VDG status
-            vdg_status = "ON" if vdg_is_on else "OFF"
-            vdg_color = (0, 255, 0) if vdg_is_on else (128, 128, 128)
-            cv2.putText(display_frame, f"VDG: {vdg_status}", (10, 90),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, vdg_color, 2)
-            
-            # Show which keys are currently pressed
-            active_keys = [k.upper() for k, v in key_states.items() if v]
-            if active_keys:
-                cv2.putText(display_frame, f"Active keys: {' '.join(set(active_keys))}", (10, 120),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 100), 2)
-            
-            cv2.putText(display_frame, "W-Fwd S-Back A-Left D-Right O-ArmUp P-Poll V-ON B-OFF ESC-Exit", (10, 150),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 0), 1)
-            
-            h_display = DISPLAY_HEIGHT // 2
-            w_display = DISPLAY_WIDTH // 2
-            display_frame = cv2.resize(display_frame, (w_display, h_display))
-            
-            cv2.imshow(window_name, display_frame)
-            
-            # Non-blocking display (10ms wait for window events)
-            key = cv2.waitKey(10) & 0xFF
-            if key == 27:  # ESC in OpenCV window
-                exit_flag = True
-                break
-            
             # Process continuous movement based on held keys (W/A/S/D only)
             motor_command = {}
             
@@ -1073,7 +1204,7 @@ def keyboard_control_mode():
             if vdg_is_on:
                 motor_command["van_de_graaf"] = 1000  # 1 second pulse, will be refreshed every loop
             
-            time.sleep(0.5)  # Controls movement rate and VDG pulse refresh rate
+            time.sleep(0.3)  # Controls movement rate and VDG pulse refresh rate
     
     except Exception as e:
         print(f"[KEYBOARD] Error: {e}")
@@ -1084,6 +1215,7 @@ def keyboard_control_mode():
             motor_command = {"van_de_graaf": 0}
             send_motor_command(client_socket, motor_command)
         
+        display_stop_event.set()
         listener.stop()
         try:
             cv2.destroyWindow(window_name)
@@ -1381,12 +1513,11 @@ def main():
     
     print("[Laptop] Frames received! Ready for commands.")
 
-    # Start display thread for manual viewing
-    display_thread_obj = None
-    if SHOW_DEBUG:
-        display_thread_obj = threading.Thread(target=display_thread, daemon=True)
-        display_thread_obj.start()
-        print("[Laptop] Display thread started (manual view)")
+    # Display thread for manual viewing is disabled - keyboard mode has its own live view
+    # if SHOW_DEBUG:
+    #     display_thread_obj = threading.Thread(target=display_thread, daemon=True)
+    #     display_thread_obj.start()
+    #     print("[Laptop] Display thread started (manual view)")
     
     # Initialize position to origin
     reset_position(position_lock, current_position)

@@ -94,25 +94,57 @@ def clamp_movement_to_limits(position_lock, current_position, LIMIT_X_MIN, LIMIT
 # Flower Tracking Helpers
 # =============================
 
-def is_flower_already_visited(visited_flowers, x, y, FLOWER_VISIT_RADIUS_CM):
-    """Check if a flower at (x, y) world coordinates has already been visited."""
-    for f in visited_flowers:
+def is_flower_already_pollinated(pollinated_flowers, x, y, exclusion_radius_cm):
+    """Check if a flower at (x, y) world coordinates is within the exclusion radius of any pollinated flower.
+    
+    Args:
+        pollinated_flowers: List of pollinated flower positions
+        x: X coordinate in world space (cm)
+        y: Y coordinate in world space (cm)
+        exclusion_radius_cm: Radius around pollinated flowers to exclude
+        
+    Returns:
+        True if flower is too close to a pollinated flower, False otherwise
+    """
+    for f in pollinated_flowers:
         dist = np.hypot(f["x"] - x, f["y"] - y)
-        if dist < FLOWER_VISIT_RADIUS_CM:
+        if dist < exclusion_radius_cm:
+            print(f"[POLLINATION] Flower at ({x:.2f}, {y:.2f}) is within {dist:.2f}cm of pollinated flower at ({f['x']:.2f}, {f['y']:.2f}) - EXCLUDING")
             return True
     return False
 
 
-def mark_flower_as_visited(visited_flowers, x, y):
-    """Mark a flower as visited at world coordinates (x, y)."""
+def mark_flower_as_pollinated(pollinated_flowers, x, y):
+    """Mark a flower as pollinated at world coordinates (x, y).
+    
+    Args:
+        pollinated_flowers: List to append pollinated flower data to
+        x: X coordinate in world space (cm)
+        y: Y coordinate in world space (cm)
+    """
     import time
-    visited_flowers.append({
+    pollinated_flowers.append({
         "x": x,
         "y": y,
         "timestamp": time.time()
     })
-    print(f"[DEMO] Flower marked as visited at world position ({x:.2f}, {y:.2f})")
-    print(f"[DEMO] Total visited flowers: {len(visited_flowers)}")
+    print(f"[POLLINATION] ✓ Flower marked as pollinated at world position ({x:.2f}, {y:.2f})")
+    print(f"[POLLINATION] Total pollinated flowers: {len(pollinated_flowers)}")
+    if len(pollinated_flowers) > 1:
+        print(f"[POLLINATION] Pollinated flower locations:")
+        for i, f in enumerate(pollinated_flowers):
+            print(f"  {i+1}. ({f['x']:.2f}, {f['y']:.2f})")
+
+
+# Legacy compatibility functions
+def is_flower_already_visited(visited_flowers, x, y, FLOWER_VISIT_RADIUS_CM):
+    """Legacy function - use is_flower_already_pollinated instead."""
+    return is_flower_already_pollinated(visited_flowers, x, y, FLOWER_VISIT_RADIUS_CM)
+
+
+def mark_flower_as_visited(visited_flowers, x, y):
+    """Legacy function - use mark_flower_as_pollinated instead."""
+    mark_flower_as_pollinated(visited_flowers, x, y)
 
 
 # =============================
@@ -304,6 +336,85 @@ def estimate_roi_depth(depth_map, roi_box, scale_factor=1.0):
         'valid_pixels': len(valid_depths),
         'coverage': 100.0 * len(valid_depths) / roi_depth.size
     }
+
+
+def find_flower_center_in_bbox(frame, bbox, use_advanced=False):
+    """Find flower center within bounding box.
+    
+    Args:
+        frame: Image frame
+        bbox: Bounding box as (x1, y1, x2, y2)
+        use_advanced: If True, find yellow region center; if False, return bbox center
+        
+    Returns:
+        Tuple of (center_x, center_y) in frame coordinates
+    """
+    import cv2
+    
+    x1, y1, x2, y2 = [int(coord) for coord in bbox]
+    
+    # Simple center estimation
+    if not use_advanced:
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+        return center_x, center_y
+    
+    # Advanced: Find yellow region within bbox
+    try:
+        # Crop to bounding box
+        crop = frame[y1:y2, x1:x2].copy()
+        if crop.size == 0:
+            # Fallback to center if crop is empty
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            return center_x, center_y
+        
+        # Convert to HSV
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        
+        # Define yellow color range in HSV
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([30, 255, 255])
+        
+        # Create mask for yellow color
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        
+        # Apply morphological operations to clean up mask
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        
+        # Find contours in mask
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Find largest contour (yellow region)
+            largest_contour = max(contours, key=cv2.contourArea)
+            
+            # Get center of largest contour
+            M = cv2.moments(largest_contour)
+            if M['m00'] != 0:
+                yellow_center_x = int(M['m10'] / M['m00'])
+                yellow_center_y = int(M['m01'] / M['m00'])
+                
+                # Convert back to full frame coordinates
+                center_x = x1 + yellow_center_x
+                center_y = y1 + yellow_center_y
+                print(f"[FLOWER] Advanced estimation: yellow region center at ({center_x}, {center_y})")
+                return center_x, center_y
+        
+        # No yellow region found, fallback to center
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+        print(f"[FLOWER] No yellow region found in bbox, using center ({center_x}, {center_y})")
+        return center_x, center_y
+        
+    except Exception as e:
+        print(f"[FLOWER] Error in advanced estimation: {e}")
+        # Fallback to simple center
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+        return center_x, center_y
 
 
 def select_target_flower(detections, depth_stats_list, frame_width, frame_height):
