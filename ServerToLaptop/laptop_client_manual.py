@@ -182,7 +182,7 @@ LIMIT_Z_MAX = 20.0      # Highest position (arm: 20 cm)
 # Arm tip offset from camera center (measured in pixels, converted to cm)
 # Arm tip is at -130px left, +150px down from camera center
 OFFSET_X_CM = 5.03      # Compensate for arm tip being left of center (move right)
-OFFSET_Y_CM = -5.81     # Compensate for arm tip being below center (move backward)
+OFFSET_Y_CM = 5.81      # Compensate for arm tip being below center (move forward)
 
 # =============================
 # Display Thread
@@ -632,7 +632,7 @@ def demo_mode_worker():
                     flower_center_y = (y1 + y2) / 2
                     
                     dx = flower_center_x - (w / 2)
-                    dy = flower_center_y - (h / 2)
+                    dy = (h / 2) - flower_center_y  # Inverted: top of image = forward
                     
                     # Calculate movement needed
                     dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_X_CM
@@ -707,9 +707,9 @@ def demo_mode_worker():
                         flower_center_y = (y1 + y2) / 2
                         
                         dx = flower_center_x - (w / 2)
-                        dy = flower_center_y - (h / 2)
+                        dy = (h / 2) - flower_center_y  # Inverted: top of image = forward
                         
-                        # Calculate final movement
+                        # Calculate final movement (with arm offset to position arm tip on flower)
                         dx_cm_raw = clamp(dx / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_X_CM
                         dy_cm_raw = clamp(dy / PIXELS_PER_CM, -MAX_CM_PER_CYCLE, MAX_CM_PER_CYCLE) + OFFSET_Y_CM
                         dx_cm_allowed, dy_cm_allowed, _ = clamp_movement_to_limits(position_lock, current_position, LIMIT_X_MIN, LIMIT_X_MAX, LIMIT_Y_MIN, LIMIT_Y_MAX, LIMIT_Z_MIN, LIMIT_Z_MAX, dx_cm_raw, dy_cm_raw, 0.0)
@@ -720,8 +720,22 @@ def demo_mode_worker():
                         
                         # Show debug visualization if enabled
                         if DEBUG_MOVEMENT:
-                            show_flower_debug_visualization(frame_left, frame_right, detections_refined, depth_stats_list,
-                                                           target_det_refined, dx, dy, dx_cm_allowed, dy_cm_allowed,
+                            # Adjust all detection coordinates from cropped frame to full frame for visualization
+                            detections_adjusted = []
+                            for det in detections_refined:
+                                det_copy = det.copy()
+                                x1, y1, x2, y2 = det_copy['box']
+                                det_copy['box'] = (x1 + w_crop_margin, y1 + h_crop_margin, 
+                                                   x2 + w_crop_margin, y2 + h_crop_margin)
+                                detections_adjusted.append(det_copy)
+                            
+                            # Also adjust target detection for visualization
+                            target_det_adjusted = target_det_refined.copy()
+                            target_det_adjusted['box'] = (x1 + w_crop_margin, y1 + h_crop_margin, 
+                                                          x2 + w_crop_margin, y2 + h_crop_margin)
+                            
+                            show_flower_debug_visualization(frame_left, frame_right, detections_adjusted, depth_stats_list,
+                                                           target_det_adjusted, dx, dy, dx_cm_allowed, dy_cm_allowed,
                                                            rails_steps_log, main_steps_log, w, h, frame_count, "REFINED")
                         
                         print(f"[DEMO] Refined approach: moving dx={dx_cm_allowed:.2f}cm, dy={dy_cm_allowed:.2f}cm")
@@ -759,17 +773,16 @@ def demo_mode_worker():
             
             elif approach_state == "pollinating":
                 # Step 3: Pollinate sequence
-                print(f"[DEMO] Frame {frame_count}: ARM DOWN 32cm")
-                arm_down_steps = int(-32 * STEPS_PER_CM_ARM)
+                print(f"[DEMO] Frame {frame_count}: ARM DOWN 35cm")
+                arm_down_steps = int(-35 * STEPS_PER_CM_ARM)
                 send_motor_command(client_socket, {'arm': arm_down_steps, '_hold_motors': ['arm']})
-                time.sleep(5.0)
                 
                 print(f"[DEMO] Running VDG for 2 seconds")
-                van_de_graaf_motor(client_socket, 2000)
-                time.sleep(2.5)
+                van_de_graaf_motor(client_socket, 10000)
+                time.sleep(7.5)
                 
-                print(f"[DEMO] ARM UP 32cm")
-                arm_up_steps = int(32 * STEPS_PER_CM_ARM)
+                print(f"[DEMO] ARM UP 35cm")
+                arm_up_steps = int(35 * STEPS_PER_CM_ARM)
                 send_motor_command(client_socket, {'arm': arm_up_steps, '_hold_motors': ['arm']})
                 time.sleep(5.0)
                 
@@ -1030,7 +1043,9 @@ def keyboard_control_mode():
                 send_motor_command(client_socket, {'arm': arm_down_steps, '_hold_motors': ['arm']})
                 
                 print(f"[KEYBOARD]   2. Running VDG for 2 seconds")
-                van_de_graaf_motor(client_socket, 50000)
+                van_de_graaf_motor(client_socket, 25000)
+
+                time.sleep(12.5)  # Wait for VDG operation
                 
                 print(f"[KEYBOARD]   3. Moving arm UP 34cm")
                 arm_up_steps = int(35 * STEPS_PER_CM_ARM)
